@@ -1,0 +1,40 @@
+{
+  "name": "@reusable/extraction",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Reusable document extraction. Other projects import extractDocument and edit src/shared/fields.ts for their field catalog. Leave src/shared/prompt.ts unchanged.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepare": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.127.0",
+    "jszip": "^3.10.2",
+    "pdf-lib": "^1.17.1",
+    "unpdf": "^1.8.1",
+    "word-extractor": "^1.0.4",
+    "xlsx": "^0.18.5",
+    "zod": "^3.25.28"
+  },
+  "devDependencies": {
+    "@types/jszip": "^3.4.0",
+    "@types/node": "^22.15.21",
+    "typescript": "^5.8.3"
+  }
+}
