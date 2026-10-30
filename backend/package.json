@@ -1,0 +1,38 @@
+{
+  "name": "extraction-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "HTTP API for customer document extraction.",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.127.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2",
+    "jszip": "^3.10.2",
+    "multer": "^2.0.2",
+    "pdf-lib": "^1.17.1",
+    "unpdf": "^1.8.1",
+    "word-extractor": "^1.0.4",
+    "xlsx": "^0.18.5",
+    "zod": "^3.25.28"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^4.17.23",
+    "@types/jszip": "^3.4.0",
+    "@types/multer": "^2.3.0",
+    "@types/node": "^22.15.21",
+    "tsx": "^4.20.6",
+    "typescript": "^5.8.3"
+  }
+}
