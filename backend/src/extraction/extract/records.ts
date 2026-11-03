@@ -1,12 +1,18 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { z } from "zod";
-import { OPTIONAL_LINE_FIELDS, type CatalogField } from "../shared/fields.js";
+import {
+  LINE_IDENTITY_KEY,
+  lineFieldsForExtract,
+  type CatalogField,
+} from "../shared/fields.js";
 import { CLAUDE_MAX_RETRIES, withClaudeSlot } from "../shared/limiter.js";
 import { lineUserText, SYSTEM_PROMPT } from "../shared/prompt.js";
 import {
   cleanExtraFields,
   extraFieldSchema,
+  isFilled,
+  type ExtraFieldValue,
   type LineExtraFields,
+  type ManufacturerOption,
 } from "../cleaner/clean.js";
 import { emptyTokenUsage, type ExtractionTokenUsage } from "../shared/tokens.js";
 import {
@@ -19,274 +25,71 @@ import {
   MAX_TEXT_CHARS,
 } from "../shared/constants.js";
 
-export type LineManufacturerOption = {
-  name: string;
-  partNumber: string;
-};
+export type LineManufacturerOption = ManufacturerOption;
 
+/** One buy line: values keyed by catalog field keys from fields.ts. */
 export type ExtractedLine = {
-  customerItemNumber: string;
-  description: string;
-  productName: string;
-  manufacturers: LineManufacturerOption[];
-  manufacturer: string;
-  partNumber: string;
-  quantity: string;
-  unitOfMeasure: string;
-  currency: string;
-  technicalSpecification: string;
-  extraFields?: LineExtraFields;
+  fields: LineExtraFields;
 };
 
-const normalizeManufacturerOptions = (
-  options: LineManufacturerOption[] | undefined,
-  manufacturer = "",
-  partNumber = "",
-): LineManufacturerOption[] => {
-  const fromOptions = (options ?? [])
-    .map((option) => ({
-      name: option.name.trim(),
-      partNumber: option.partNumber.trim(),
-    }))
-    .filter((option) => option.name || option.partNumber);
-  if (fromOptions.length) return fromOptions;
-
-  const name = manufacturer.trim();
-  const part = partNumber.trim();
-  if (!name && !part) return [];
-  return [{ name, partNumber: part }];
+const stringField = (fields: LineExtraFields, key: string) => {
+  const value = fields[key];
+  return typeof value === "string" ? value.trim() : "";
 };
 
-const withManufacturerOptions = <
-  T extends {
-    manufacturers?: LineManufacturerOption[];
-    manufacturer: string;
-    partNumber: string;
-  },
->(
-  item: T,
-): T => {
-  const manufacturers = normalizeManufacturerOptions(
-    item.manufacturers,
-    item.manufacturer,
-    item.partNumber,
-  );
-  return {
-    ...item,
-    manufacturers,
-    manufacturer: manufacturers[0]?.name ?? "",
-    partNumber: manufacturers[0]?.partNumber ?? "",
-  };
-};
+export const lineIdentityValue = (line: ExtractedLine) =>
+  stringField(line.fields, LINE_IDENTITY_KEY);
 
-const fieldSchema = z.preprocess((value) => asField(value), z.string());
-
-const extractedItemSchema = z.object({
-  customerItemNumber: fieldSchema.optional().default(""),
-  description: fieldSchema.optional().default(""),
-  productName: fieldSchema.optional().default(""),
-  manufacturers: z
-    .array(
-      z.object({
-        name: fieldSchema.optional().default(""),
-        partNumber: fieldSchema.optional().default(""),
-      }),
-    )
-    .optional()
-    .default([]),
-  manufacturer: fieldSchema.optional().default(""),
-  partNumber: fieldSchema.optional().default(""),
-  quantity: fieldSchema.optional().default(""),
-  unitOfMeasure: fieldSchema.optional().default(""),
-  currency: fieldSchema.optional().default(""),
-  technicalSpecification: fieldSchema.optional().default(""),
-  extraFields: z.unknown().optional(),
+/** Catalog keys the results page reads from each line. */
+export const lineFieldValues = (line: ExtractedLine): LineExtraFields => ({
+  ...line.fields,
 });
 
-const EXTRACT_TOOL: Anthropic.Tool = {
-  name: LINE_ITEMS_TOOL_NAME,
-  description:
-    "Save every product row extracted from the attached document.",
-  input_schema: {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      items: {
-        type: "array",
-        description:
-          "Products, materials, spares, or services listed in the document. Skip questionnaire rows and blank form fields.",
-        items: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            customerItemNumber: {
-              type: "string",
-              description:
-                "Printed item / line / position number only. Keep dots and leading zeros. Never put this in description or productName.",
-            },
-            description: {
-              type: "string",
-              description:
-                "The item text for this product row — short text, Description column, product title, or title after the item number.",
-            },
-            productName: {
-              type: "string",
-              description:
-                "Short readable catalog name you write from the description. Empty if there is no description.",
-            },
-            manufacturers: {
-              type: "array",
-              description:
-                "Every manufacturer or brand on this product row, each with its own part number. Empty array only when the row lists none.",
-              items: {
-                type: "object",
-                additionalProperties: false,
-                properties: {
-                  name: {
-                    type: "string",
-                    description:
-                      "Company name only — not vendor id, city, country, or street.",
-                  },
-                  partNumber: {
-                    type: "string",
-                    description:
-                      "That manufacturer's MPN, Material No, P/N, or equivalent.",
-                  },
-                },
-                required: ["name", "partNumber"],
-              },
-            },
-            manufacturer: {
-              type: "string",
-              description: "First manufacturer name if manufacturers is empty.",
-            },
-            partNumber: {
-              type: "string",
-              description: "First part number if manufacturers is empty.",
-            },
-            quantity: {
-              type: "string",
-              description: "Quantity number only. Never include the unit.",
-            },
-            unitOfMeasure: {
-              type: "string",
-              description:
-                "Short standard unit code only (PCS, SET, KG, M, L, BOX). Convert a printed word yourself (Pieces, PCE, Each, EA, Nos → PCS). Never include the quantity.",
-            },
-            currency: {
-              type: "string",
-              description:
-                "3-letter ISO code only. Convert a printed name yourself (US Dollar → USD, UAE Dirham → AED). Use the document currency on every line unless that line shows a different one.",
-            },
-            technicalSpecification: {
-              type: "string",
-              description:
-                "Notes, classification, PO text, size, or spec on this line. Not a separate line.",
-            },
-          },
-          required: [
-            "customerItemNumber",
-            "description",
-            "productName",
-            "manufacturers",
-            "manufacturer",
-            "partNumber",
-            "quantity",
-            "unitOfMeasure",
-            "currency",
-            "technicalSpecification",
-          ],
-        },
-      },
-    },
-    required: ["items"],
-  },
-};
-
-type ItemsSchema = {
-  items: { properties: Record<string, unknown>; required: string[] };
-};
-
 /**
- * The base tool plus an extraFields object holding the optional fields from
- * fields.ts. With no optional fields the base tool is used.
+ * Tool schema built entirely from the catalog fields passed in.
+ * Adding or renaming a field in fields.ts updates this automatically.
+ * Only default fields are required so Claude does not emit empty shells for
+ * every optional key on every row (that was slowing large catalogs).
  */
-const extractToolFor = (extraFields: CatalogField[]): Anthropic.Tool => {
-  if (!extraFields.length) return EXTRACT_TOOL;
-  const base = (EXTRACT_TOOL.input_schema.properties as { items: ItemsSchema })
-    .items;
+const extractToolFor = (fields: CatalogField[]): Anthropic.Tool => {
+  const required = fields
+    .filter((field) => field.isDefault)
+    .map((field) => field.key);
   return {
-    ...EXTRACT_TOOL,
+    name: LINE_ITEMS_TOOL_NAME,
+    description: "Save every product row extracted from the attached document.",
     input_schema: {
-      ...EXTRACT_TOOL.input_schema,
+      type: "object",
+      additionalProperties: false,
       properties: {
         items: {
-          ...base,
+          type: "array",
+          description:
+            "Products, materials, spares, or services listed in the document. Skip questionnaire rows and blank form fields.",
           items: {
-            ...base.items,
-            properties: {
-              ...base.items.properties,
-              extraFields: {
-                type: "object",
-                additionalProperties: false,
-                description:
-                  "Optional fields for this product row. Use an empty string or empty array when the row does not show the value. Never guess.",
-                properties: Object.fromEntries(
-                  extraFields.map((field) => [field.key, extraFieldSchema(field)]),
-                ),
-                required: extraFields.map((field) => field.key),
-              },
-            },
-            required: [...base.items.required, "extraFields"],
+            type: "object",
+            additionalProperties: false,
+            properties: Object.fromEntries(
+              fields.map((field) => [field.key, extraFieldSchema(field)]),
+            ),
+            required: required.length ? required : fields.slice(0, 1).map((f) => f.key),
           },
         },
       },
+      required: ["items"],
     },
   };
 };
 
-const asField = (value: unknown): string => {
-  if (value === null || value === undefined) return "";
-  if (Array.isArray(value)) {
-    return value
-      .map((entry) => asField(entry))
-      .filter(Boolean)
-      .join("; ");
-  }
-  return String(value).trim();
-};
-
-const cleanField = (value: string): string => value.trim();
-
 const toLineItem = (
-  raw: z.infer<typeof extractedItemSchema>,
-  extraDefs: CatalogField[],
-): ExtractedLine => {
-  const description = cleanField(raw.description);
-  const manufacturers: LineManufacturerOption[] = (raw.manufacturers ?? [])
-    .map((option) => ({
-      name: cleanField(option.name),
-      partNumber: cleanField(option.partNumber),
-    }))
-    .filter((option) => option.name || option.partNumber);
-  return withManufacturerOptions({
-    customerItemNumber: cleanField(raw.customerItemNumber),
-    description,
-    productName: cleanField(raw.productName).slice(0, 200),
-    manufacturers,
-    manufacturer: cleanField(raw.manufacturer),
-    partNumber: cleanField(raw.partNumber),
-    quantity: cleanField(raw.quantity),
-    unitOfMeasure: cleanField(raw.unitOfMeasure),
-    currency: cleanField(raw.currency),
-    technicalSpecification: cleanField(raw.technicalSpecification).slice(
-      0,
-      4000,
-    ),
-    ...(extraDefs.length
-      ? { extraFields: cleanExtraFields(extraDefs, raw.extraFields) }
-      : {}),
-  });
+  raw: unknown,
+  fieldDefs: CatalogField[],
+): ExtractedLine | null => {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const fields = cleanExtraFields(fieldDefs, raw);
+  const item: ExtractedLine = { fields };
+  if (!hasExtractedIdentity(item)) return null;
+  return item;
 };
 
 const takeCompleteJsonObjects = (source: string): unknown[] => {
@@ -351,7 +154,7 @@ const takeCompleteJsonObjects = (source: string): unknown[] => {
 
 const parseToolItems = (
   input: unknown,
-  extraDefs: CatalogField[],
+  fieldDefs: CatalogField[],
 ): ExtractedLine[] => {
   const rows = Array.isArray(input)
     ? input
@@ -364,62 +167,54 @@ const parseToolItems = (
       : [];
 
   return rows.flatMap((row) => {
-    const parsed = extractedItemSchema.safeParse(row);
-    if (!parsed.success) return [];
-    const item = toLineItem(parsed.data, extraDefs);
-    if (!hasExtractedIdentity(item)) return [];
-    return [item];
+    const item = toLineItem(row, fieldDefs);
+    return item ? [item] : [];
   });
 };
 
 const hasExtractedIdentity = (item: ExtractedLine) =>
-  Boolean(
-    item.description ||
-    item.productName ||
-    item.partNumber ||
-    item.manufacturer ||
-    item.manufacturers.some((option) => option.name || option.partNumber),
+  Object.entries(item.fields).some(
+    ([key, value]) => key !== LINE_IDENTITY_KEY && isFilled(value),
   );
 
-const isReadyItem = (item: ExtractedLine) =>
-  hasExtractedIdentity(item) &&
-  Boolean(
-    item.quantity ||
-    item.unitOfMeasure ||
-    item.manufacturer ||
-    item.partNumber ||
-    item.manufacturers.some((option) => option.name || option.partNumber),
+const isReadyItem = (item: ExtractedLine) => {
+  if (!hasExtractedIdentity(item)) return false;
+  const filled = Object.entries(item.fields).filter(
+    ([key, value]) => key !== LINE_IDENTITY_KEY && isFilled(value),
   );
+  return filled.length >= 1;
+};
 
 const itemPersistKey = (item: ExtractedLine, index: number) =>
-  item.customerItemNumber.trim() || `row:${index}`;
+  lineIdentityValue(item) || `row:${index}`;
 
-const itemPersistSig = (item: ExtractedLine) =>
-  [
-    item.customerItemNumber,
-    item.description,
-    item.productName,
-    item.quantity,
-    item.unitOfMeasure,
-    item.currency,
-    item.manufacturer,
-    item.partNumber,
-    JSON.stringify(item.manufacturers ?? []),
-    JSON.stringify(item.extraFields ?? {}),
-  ].join("|");
+const itemPersistSig = (item: ExtractedLine) => JSON.stringify(item.fields);
 
 const userContent = (
   buffer: Buffer,
   originalName: string,
   ext: string,
   officeText: string,
-  extraDefs: CatalogField[],
+  fieldDefs: CatalogField[],
 ): Anthropic.ContentBlockParam[] => {
   const blocks: Anthropic.ContentBlockParam[] = [];
   const imageMedia = IMAGE_MEDIA[ext];
   const trimmedText = officeText.trim();
 
-  if (trimmedText) {
+  // Images first — never treat binary image bytes as plain text.
+  if (imageMedia) {
+    if (buffer.length > MAX_IMAGE_BYTES) {
+      throw new Error("Images must be 5 MB or smaller.");
+    }
+    blocks.push({
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: imageMedia,
+        data: buffer.toString("base64"),
+      },
+    });
+  } else if (trimmedText) {
     blocks.push({
       type: "document",
       title: originalName,
@@ -439,15 +234,6 @@ const userContent = (
         data: buffer.toString("base64"),
       },
     });
-  } else if (imageMedia && buffer.length <= MAX_IMAGE_BYTES) {
-    blocks.push({
-      type: "image",
-      source: {
-        type: "base64",
-        media_type: imageMedia,
-        data: buffer.toString("base64"),
-      },
-    });
   }
 
   blocks.push({
@@ -455,8 +241,9 @@ const userContent = (
     text: lineUserText({
       originalName,
       ext,
-      hasText: Boolean(trimmedText),
-      extraFieldKeys: extraDefs.map((field) => field.key),
+      hasText: Boolean(trimmedText) && !imageMedia,
+      fieldKeys: fieldDefs.map((field) => field.key),
+      identityKey: LINE_IDENTITY_KEY,
     }),
   });
 
@@ -470,6 +257,9 @@ export const extractLineItemsWithClaude = async (input: {
   officeText: string;
   apiKey: string;
   model: string;
+  /** Catalog fields to extract (defaults + optionals). Derived from fields.ts. */
+  lineFields?: CatalogField[];
+  signal?: AbortSignal;
   onBatch?: (items: ExtractedLine[]) => Promise<void>;
 }): Promise<{
   items: ExtractedLine[];
@@ -479,14 +269,20 @@ export const extractLineItemsWithClaude = async (input: {
   if (!input.apiKey) {
     return { items: [], stopReason: "", usage: emptyTokenUsage() };
   }
+  if (input.signal?.aborted) {
+    throw new Error("Extraction was cancelled.");
+  }
 
-  const extraDefs = OPTIONAL_LINE_FIELDS.filter((field) => !field.isDefault);
+  const fieldDefs =
+    input.lineFields?.length
+      ? input.lineFields
+      : lineFieldsForExtract([]);
   const content = userContent(
     input.buffer,
     input.originalName,
     input.ext,
     input.officeText,
-    extraDefs,
+    fieldDefs,
   );
   const hasFile = content.some(
     (block) => block.type === "document" || block.type === "image",
@@ -531,21 +327,28 @@ export const extractLineItemsWithClaude = async (input: {
     };
 
     const response = await withClaudeSlot(async () => {
-      const stream = client.messages.stream({
-        model: input.model,
-        max_tokens: LINE_MAX_TOKENS,
-        temperature: 0,
-        system: SYSTEM_PROMPT,
-        tools: [extractToolFor(extraDefs)],
-        tool_choice: { type: "tool", name: LINE_ITEMS_TOOL_NAME },
-        messages: [{ role: "user", content }],
-      });
+      const stream = client.messages.stream(
+        {
+          model: input.model,
+          max_tokens: LINE_MAX_TOKENS,
+          temperature: 0,
+          system: SYSTEM_PROMPT,
+          tools: [extractToolFor(fieldDefs)],
+          tool_choice: { type: "tool", name: LINE_ITEMS_TOOL_NAME },
+          messages: [{ role: "user", content }],
+        },
+        input.signal ? { signal: input.signal } : undefined,
+      );
       for await (const event of stream) {
+        if (input.signal?.aborted) {
+          stream.abort();
+          throw new Error("Extraction was cancelled.");
+        }
         if (event.type !== "content_block_delta") continue;
         if (event.delta.type !== "input_json_delta") continue;
         jsonAcc += event.delta.partial_json;
         emitItems(
-          parseToolItems(takeCompleteJsonObjects(jsonAcc), extraDefs),
+          parseToolItems(takeCompleteJsonObjects(jsonAcc), fieldDefs),
           true,
         );
       }
@@ -558,7 +361,7 @@ export const extractLineItemsWithClaude = async (input: {
     );
     const items =
       toolBlock && toolBlock.type === "tool_use"
-        ? parseToolItems(toolBlock.input, extraDefs)
+        ? parseToolItems(toolBlock.input, fieldDefs)
         : [];
     emitItems(items, false);
     await persistQueue;
@@ -585,3 +388,5 @@ export const extractLineItemsWithClaude = async (input: {
       : new Error(`Line item extraction failed for ${input.originalName}.`);
   }
 };
+
+export type { ExtraFieldValue };

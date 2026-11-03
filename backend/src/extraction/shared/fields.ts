@@ -1,22 +1,16 @@
 /**
  * The field catalog: key, data type, and description.
- * Leave src/extraction/shared/prompt.ts unchanged.
  *
- * The eight default line fields stay mapped to fixed tool properties.
- * Do not rename those tool properties; the prompt talks about them by name.
+ * LINE_FIELDS is the single source of truth for line extraction.
+ * Edit keys, labels, descriptions, or isDefault here only — the Claude tool
+ * schema, prompts, and Results columns are derived from this list.
  *
- *   line_no                  → customerItemNumber
- *   short_description        → description
- *   product_name             → productName
- *   manufacturers            → manufacturers, plus manufacturer and partNumber
- *   quantity                 → quantity
- *   uom                      → unitOfMeasure
- *   currency                 → currency
- *   technical_specification  → technicalSpecification
+ * - isDefault: always extracted and always shown when no template is selected
+ * - identity: used to merge/dedupe streamed rows (typically the line number)
+ * - description: what Claude reads for that field in the tool schema
  *
- * Every other LINE key is an extraFields property. Its description is what
- * Claude reads for that field. A template in the calling app does not add a
- * field to the Claude call. To make extraction see a new field, add it here.
+ * A template selects which non-default keys to extract. With no template,
+ * every optional field is requested alongside the defaults.
  */
 
 import {
@@ -34,6 +28,8 @@ export type CatalogField = {
   dataType: FieldDataType;
   description: string;
   isDefault?: boolean;
+  /** Marks the field used as the line identity for merge/continuation. */
+  identity?: boolean;
   matchRole?: string;
   /** False for customer-identifying fields; they never go to suppliers. */
   supplierShareable?: boolean;
@@ -47,93 +43,154 @@ const { TEXT, NUMBER, DATE, CODE, ENUM, LIST, KEY_VALUE, MANUFACTURER_LIST } =
 const PRODUCT_MATCHING = "Product matching: helps pick the right catalogue product.";
 
 export const LINE_FIELDS: CatalogField[] = [
-  // The 8 default fields every template keeps (they have their own columns).
+  // Default fields every extract keeps (isDefault). Shown as columns without a template.
+  {
+    key: "line_no",
+    label: "Line No.",
+    dataType: TEXT,
+    isDefault: true,
+    identity: true,
+    description:
+      "The printed item, line or position number only. Keep dots and leading zeros. Never use the document, PR or file number.",
+  },
+  {
+    key: "short_description",
+    label: "Short Description",
+    dataType: TEXT,
+    isDefault: true,
+    matchRole: "DESCRIPTIVE",
+    matchingUse: PRODUCT_MATCHING,
+    description:
+      "The item text for this buy line, from the Short Text, Name or Description column.",
+  },
+  {
+    key: "product_name",
+    label: "Product Name",
+    dataType: TEXT,
+    isDefault: true,
+    matchRole: "DESCRIPTIVE",
+    matchingUse: PRODUCT_MATCHING,
+    description:
+      "A short, readable catalogue name written from the description. Not a code, maker or part number.",
+  },
+  {
+    key: "manufacturers",
+    label: "Manufacturers",
+    dataType: MANUFACTURER_LIST,
+    isDefault: true,
+    matchRole: "IDENTIFIER",
+    matchingUse:
+      "Product and supplier matching: finds the product and the suppliers of each maker and part number.",
+    description:
+      "Every approved maker for the line, each with its own manufacturer part number (MPN, P/N, Material No.).",
+  },
+  {
+    key: "quantity",
+    label: "Quantity",
+    dataType: NUMBER,
+    isDefault: true,
+    description:
+      "The requested quantity, as a number only. Split it from the unit when both are printed together.",
+  },
+  {
+    key: "uom",
+    label: "Unit of Measure",
+    dataType: CODE,
+    isDefault: true,
+    description:
+      "A standard unit code such as PCS, SET, KIT, KG, M, L or BOX. Convert printed words (Pieces, EA, Nos -> PCS).",
+  },
+  {
+    key: "currency",
+    label: "Currency",
+    dataType: CODE,
+    isDefault: true,
+    description:
+      "The 3-letter ISO currency code from the line or the document (US Dollar -> USD, UAE Dirham -> AED).",
+  },
+  {
+    key: "technical_specification",
+    label: "Technical Specification",
+    dataType: TEXT,
+    isDefault: true,
+    matchRole: "DESCRIPTIVE",
+    description:
+      "A summary of the line's notes, size or specification in at most two short sentences.",
+  },
+  // Optional fields (including invoice-oriented keys). Selected by template or all when none.
   {
     key: "invoice_number",
     label: "Invoice Number",
     dataType: TEXT,
-    isDefault: true,
-    description: "The unique invoice reference number printed on the document."
+    description: "The unique invoice reference number printed on the document.",
   },
   {
     key: "invoice_date",
     label: "Invoice Date",
     dataType: DATE,
-    isDefault: true,
-    description: "The date on which the invoice was issued."
+    description: "The date on which the invoice was issued.",
   },
   {
     key: "vendor_name",
     label: "Vendor Name",
     dataType: TEXT,
-    isDefault: true,
     matchRole: "IDENTIFIER",
-    description: "The official name of the company or supplier issuing the invoice."
+    description: "The official name of the company or supplier issuing the invoice.",
   },
   {
     key: "billing_address",
     label: "Billing Address",
     dataType: TEXT,
-    isDefault: true,
-    description: "The complete billing address of the customer mentioned in the document."
+    description: "The complete billing address of the customer mentioned in the document.",
   },
   {
     key: "subtotal",
     label: "Subtotal",
     dataType: NUMBER,
-    isDefault: true,
-    description: "The total amount before taxes, discounts and additional charges."
+    description: "The total amount before taxes, discounts and additional charges.",
   },
   {
     key: "tax_amount",
     label: "Tax Amount",
     dataType: NUMBER,
-    isDefault: true,
-    description: "The total tax amount applied to the invoice, including applicable GST or VAT."
+    description: "The total tax amount applied to the invoice, including applicable GST or VAT.",
   },
   {
     key: "discount_percentage",
     label: "Discount Percentage",
     dataType: NUMBER,
-    isDefault: true,
-    description: "The discount percentage applied to the invoice or individual product."
+    description: "The discount percentage applied to the invoice or individual product.",
   },
   {
     key: "total_amount",
     label: "Total Amount",
     dataType: NUMBER,
-    isDefault: true,
-    description: "The final payable amount after taxes, discounts and additional charges."
+    description: "The final payable amount after taxes, discounts and additional charges.",
   },
   {
     key: "payment_status",
     label: "Payment Status",
     dataType: CODE,
-    isDefault: true,
-    description: "The payment status such as PAID, UNPAID or PARTIALLY_PAID."
+    description: "The payment status such as PAID, UNPAID or PARTIALLY_PAID.",
   },
   {
     key: "payment_terms",
     label: "Payment Terms",
     dataType: TEXT,
-    isDefault: true,
-    description: "The agreed payment conditions such as Net 30, Net 60 or Advance Payment."
+    description: "The agreed payment conditions such as Net 30, Net 60 or Advance Payment.",
   },
   {
     key: "purchase_order_number",
     label: "Purchase Order Number",
     dataType: TEXT,
-    isDefault: true,
-    description: "The purchase order reference number associated with the invoice."
+    description: "The purchase order reference number associated with the invoice.",
   },
   {
     key: "due_date",
     label: "Due Date",
     dataType: DATE,
-    isDefault: true,
-    description: "The final date by which the invoice payment must be completed."
+    description: "The final date by which the invoice payment must be completed.",
   },
-  // Optional fields, stored in extraFields.
   { key: "item_scope", label: "Item Scope", dataType: ENUM, matchRole: "SCOPE", matchingUse: "Supplier matching: spare-part lines go to the equipment maker's spares suppliers. Also helps product matching.", description: "FULL when the line buys a complete product in its own right (valve, fitting, pipe, tube, cable, instrument, consumable), even a small one. PARTIAL for an assembly or kit of a larger unit (repair kit, actuator assembly, stem and piston assembly). PART for a spare component of a specific larger unit (seat ring, O-ring, diaphragm, PCB board), usually with equipment, OEM model or drawing references." },
   { key: "long_description", label: "Long Description", dataType: TEXT, matchRole: "DESCRIPTIVE", description: "The full item text (Basic Data Text, Purchase Order Text, PO Material Text or InternalNote), without page headers." },
   { key: "material_code", label: "Customer Material Code", dataType: TEXT, matchRole: "CUSTOMER_CODE", supplierShareable: false, matchingUse: "Product matching: remembers the product confirmed for this customer's code.", description: "The customer's stock or material number (Material Number, Mat'l code, ITEM CODE, Vocab). In SAP printouts it is the long number right after the item number on the item row, e.g. 00010 120005020889." },
@@ -180,5 +237,32 @@ export const HEADER_FIELDS: CatalogField[] = [
   { key: "external_reference", label: "External Reference", dataType: TEXT, supplierShareable: false, description: "End customer document number on a re-enquiry from a trader (EXT REF)." },
 ];
 
-/** Optional line keys. These are the extraFields Claude fills on every call. */
+/** Always-included line fields (`isDefault: true`). */
+export const DEFAULT_LINE_FIELDS = LINE_FIELDS.filter((field) => field.isDefault);
+
+/** Optional line fields (not default). Selected by template or all when none. */
 export const OPTIONAL_LINE_FIELDS = LINE_FIELDS.filter((field) => !field.isDefault);
+
+/** Catalog key used to merge streamed line rows. */
+export const LINE_IDENTITY_KEY =
+  LINE_FIELDS.find((field) => field.identity)?.key ??
+  DEFAULT_LINE_FIELDS[0]?.key ??
+  "line_no";
+
+/**
+ * Fields Claude should extract for a job: defaults plus selected optionals.
+ * Custom extras (non-catalog) are appended as-is.
+ */
+export const lineFieldsForExtract = (
+  optionals: CatalogField[] = OPTIONAL_LINE_FIELDS,
+): CatalogField[] => {
+  const seen = new Set(DEFAULT_LINE_FIELDS.map((field) => field.key));
+  return [
+    ...DEFAULT_LINE_FIELDS,
+    ...optionals.filter((field) => {
+      if (seen.has(field.key)) return false;
+      seen.add(field.key);
+      return true;
+    }),
+  ];
+};

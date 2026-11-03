@@ -12,6 +12,7 @@ import type { ExtractionTokenUsage } from "../shared/tokens.js";
 import {
   officePlainText,
   pdfRowText,
+  sniffImageExtension,
   splitPdfParts,
   textIsUsable,
 } from "../read/documentText.js";
@@ -44,7 +45,9 @@ const documentBlock = async (
   originalName: string,
 ): Promise<Anthropic.ContentBlockParam | null> => {
   const buffer = await fs.readFile(filePath);
-  const ext = extensionOf(originalName) || extensionOf(filePath);
+  const pathExt = extensionOf(originalName) || extensionOf(filePath);
+  const imageExt = sniffImageExtension(originalName || filePath, buffer);
+  const ext = imageExt || pathExt;
   const imageMedia = IMAGE_MEDIA[ext];
   if (imageMedia) {
     if (buffer.length > MAX_IMAGE_BYTES) return null;
@@ -97,16 +100,24 @@ export const extractHeaderFields = async (input: {
   originalName: string;
   apiKey: string;
   model: string;
+  fields?: typeof HEADER_FIELDS;
+  /** Reuse text already extracted for lines — avoids a second full PDF parse. */
+  plainText?: string;
+  signal?: AbortSignal;
 }): Promise<HeaderExtraction> => {
-  const { filePath, originalName, apiKey, model } = input;
+  const { filePath, originalName, apiKey, model, plainText, signal } = input;
   const empty: HeaderExtraction = {
     fields: {},
     usage: { inputTokens: 0, outputTokens: 0, model },
   };
   if (!apiKey) return empty;
+  if (signal?.aborted) return empty;
 
-  const catalog = HEADER_FIELDS;
-  const document = await documentBlock(filePath, originalName);
+  const catalog = input.fields?.length ? input.fields : HEADER_FIELDS;
+  const document =
+    plainText && textIsUsable(plainText)
+      ? textBlock(originalName, plainText)
+      : await documentBlock(filePath, originalName);
   if (!catalog.length || !document) return empty;
 
   const tool: Anthropic.Tool = {
@@ -133,25 +144,28 @@ export const extractHeaderFields = async (input: {
     maxRetries: CLAUDE_MAX_RETRIES,
   });
   const response = await withClaudeSlot(() =>
-    client.messages.create({
-      model,
-      max_tokens: HEADER_MAX_TOKENS,
-      output_config: { effort: "low" },
-      tools: [tool],
-      tool_choice: { type: "auto" },
-      messages: [
-        {
-          role: "user",
-          content: [
-            document,
-            {
-              type: "text",
-              text: headerUserText(originalName),
-            },
-          ],
-        },
-      ],
-    }),
+    client.messages.create(
+      {
+        model,
+        max_tokens: HEADER_MAX_TOKENS,
+        output_config: { effort: "low" },
+        tools: [tool],
+        tool_choice: { type: "auto" },
+        messages: [
+          {
+            role: "user",
+            content: [
+              document,
+              {
+                type: "text",
+                text: headerUserText(originalName),
+              },
+            ],
+          },
+        ],
+      },
+      signal ? { signal } : undefined,
+    ),
   );
 
   const usage: ExtractionTokenUsage = {

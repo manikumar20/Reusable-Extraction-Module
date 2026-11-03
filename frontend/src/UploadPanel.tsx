@@ -8,6 +8,7 @@ type UploadPanelProps = {
   uploading: boolean;
   uploadError: string;
   liveError: string;
+  activeTemplateName?: string | null;
   onFile: (file: File) => void;
 };
 
@@ -17,6 +18,7 @@ export const UploadPanel = ({
   uploading,
   uploadError,
   liveError,
+  activeTemplateName,
   onFile,
 }: UploadPanelProps) => {
   const [dragOver, setDragOver] = useState(false);
@@ -68,10 +70,15 @@ export const UploadPanel = ({
           take(event.dataTransfer.files[0]);
         }}
       >
-        <h2>Upload a customer file</h2>
+        <h2>Upload a file</h2>
         <p className="hint">
           PDF, Word, Excel, text, or an image. Documents up to {maxUpload} MB,
           images up to {maxImage} MB.
+        </p>
+        <p className="hint template-active-hint">
+          {activeTemplateName
+            ? `Active template: ${activeTemplateName}`
+            : "No active template — set one under Templates to extract with a field list."}
         </p>
         <label className="primary">
           {uploading ? "Uploading…" : job ? "Extract another file" : "Choose a file"}

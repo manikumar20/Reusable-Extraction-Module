@@ -1,8 +1,15 @@
 import fs from "node:fs/promises";
-import { OPTIONAL_LINE_FIELDS } from "../shared/fields.js";
+import {
+  HEADER_FIELDS,
+  LINE_FIELDS,
+  LINE_IDENTITY_KEY,
+  lineFieldsForExtract,
+  type CatalogField,
+} from "../shared/fields.js";
 import {
   officePlainText,
   pdfRowText,
+  sniffImageExtension,
   splitPdfParts,
   textIsUsable,
 } from "../read/documentText.js";
@@ -18,7 +25,6 @@ import {
   chunkCharsFor,
   chunkPlainText,
   runPool,
-  snapBack,
   tailAfterLastItem,
 } from "./chunk.js";
 import { extractHeaderFields } from "./documentFields.js";
@@ -29,6 +35,7 @@ import {
 import {
   CHUNK_CONCURRENCY,
   MAX_CONTINUATION_DEPTH,
+  MAX_IMAGE_BYTES,
   MIN_CONTINUATION_CHARS,
   READ_SHARE,
 } from "../shared/constants.js";
@@ -63,10 +70,24 @@ export type ExtractDocumentInput = {
   recordModel: string;
   /** Header model, for example "claude-haiku-5-5". */
   documentModel: string;
+  /** Catalogue header keys to extract. Empty / omitted means every header field. */
+  headerKeys?: string[];
+  /** Catalogue line keys to extract (optionals). Empty / omitted means defaults only. Defaults always included. */
+  lineKeys?: string[];
+  /** Explicit optional line fields (catalogue or custom). Wins over lineKeys when provided. Defaults always included. */
+  lineExtras?: CatalogField[];
+  /** Abort in-flight Claude/PDF work when a newer job supersedes this one. */
+  signal?: AbortSignal;
   /** Called with each batch of buy lines as soon as those objects are complete. */
   onRecords?: (records: ExtractedLine[]) => void | Promise<void>;
   /** 0–99 while the file is read and the lines are extracted. */
   onProgress?: (percent: number) => void | Promise<void>;
+};
+
+const byKeys = (catalog: CatalogField[], keys: string[] | undefined) => {
+  if (!keys?.length) return catalog;
+  const wanted = new Set(keys);
+  return catalog.filter((field) => wanted.has(field.key));
 };
 
 export type ExtractDocumentResult = {
@@ -91,6 +112,10 @@ export const extractDocument = async (
     apiKey,
     recordModel,
     documentModel,
+    headerKeys,
+    lineKeys,
+    lineExtras,
+    signal,
     onRecords,
     onProgress,
   } = input;
@@ -101,8 +126,17 @@ export const extractDocument = async (
       "CLAUDE_NOT_CONFIGURED",
     );
   }
+  if (signal?.aborted) {
+    throw new ExtractionError(499, "Extraction was cancelled.", "JOB_CANCELLED");
+  }
 
-  const extraFields = OPTIONAL_LINE_FIELDS;
+  const headerCatalog = byKeys(HEADER_FIELDS, headerKeys);
+  // No template → defaults only (matches Results UI). Template keys/extras add optionals.
+  const selectedOptionals = lineKeys?.length
+    ? byKeys(LINE_FIELDS, lineKeys).filter((field) => !field.isDefault)
+    : [];
+  const optionals = lineExtras ?? selectedOptionals;
+  const lineFields = lineFieldsForExtract(optionals);
   const usage = emptyTokenUsage();
   usage.model = recordModel;
 
@@ -114,10 +148,24 @@ export const extractDocument = async (
   };
 
   const buffer = await fs.readFile(filePath);
-  const ext = extensionOf(fileName) || extensionOf(filePath);
+  const pathExt = extensionOf(fileName) || extensionOf(filePath);
+  const imageExt = sniffImageExtension(fileName || filePath, buffer);
+  const isImage = Boolean(imageExt);
+  const ext = isImage ? imageExt : pathExt;
   await report(0);
-  const officeText =
-    ext === ".txt"
+
+  if (isImage && buffer.length > MAX_IMAGE_BYTES) {
+    throw new ExtractionError(
+      413,
+      "Images must be 5 MB or smaller.",
+      "IMAGE_TOO_LARGE",
+    );
+  }
+
+  // Images are vision-only — never run office/PDF text parsers on them.
+  const officeText = isImage
+    ? ""
+    : ext === ".txt"
       ? buffer.toString("utf8")
       : ext === ".pdf"
         ? (
@@ -127,15 +175,18 @@ export const extractDocument = async (
           ).text
         : await officePlainText(buffer, ext);
   if (ext !== ".pdf") await report(READ_SHARE);
-  const sendText = ext !== ".pdf" || textIsUsable(officeText);
-  const jobs = sendText
-    ? chunkPlainText(officeText, chunkCharsFor(extraFields.length)).map(
-        (text) => ({ buffer, text }),
-      )
-    : (await splitPdfParts(buffer)).map((part) => ({
-        buffer: part,
-        text: "",
-      }));
+  const sendText = !isImage && (ext !== ".pdf" || textIsUsable(officeText));
+  // Chunk size depends on optional count only — defaults always come along.
+  const jobs = isImage
+    ? [{ buffer, text: "" }]
+    : sendText
+      ? chunkPlainText(officeText, chunkCharsFor(optionals.length)).map(
+          (text) => ({ buffer, text }),
+        )
+      : (await splitPdfParts(buffer)).map((part) => ({
+          buffer: part,
+          text: "",
+        }));
   const workShare = 100 - READ_SHARE;
   const done = jobs.map(() => 0);
   const publish = async () => {
@@ -164,6 +215,9 @@ export const extractDocument = async (
     index: number,
     depth: number,
   ) => {
+    if (signal?.aborted) {
+      throw new ExtractionError(499, "Extraction was cancelled.", "JOB_CANCELLED");
+    }
     const result = await extractLineItemsWithClaude({
       buffer: piece.buffer,
       originalName: fileName,
@@ -171,37 +225,21 @@ export const extractDocument = async (
       officeText: piece.text,
       apiKey,
       model: recordModel,
+      lineFields,
+      signal,
       onBatch: persistFor(index),
     });
     addTokenUsage(usage, result.usage);
+    // Only continue when Claude hit the output cap — do not binary-split empty
+    // results (that caused many slow follow-up calls on large PDFs with no lines).
     if (result.stopReason !== "max_tokens" || depth >= MAX_CONTINUATION_DEPTH) return;
-    const tail = tailAfterLastItem(piece.text, result.items);
+    const tail = tailAfterLastItem(piece.text, result.items, LINE_IDENTITY_KEY);
     if (
       tail.length > MIN_CONTINUATION_CHARS &&
       tail.length < piece.text.length - 50
     ) {
       await extractTextPiece(
         { buffer: piece.buffer, text: tail },
-        index,
-        depth + 1,
-      );
-      return;
-    }
-    if (result.items.length === 0 && piece.text.length > 8_000) {
-      const mid = snapBack(piece.text, Math.floor(piece.text.length / 2));
-      if (
-        mid <= MIN_CONTINUATION_CHARS ||
-        mid >= piece.text.length - MIN_CONTINUATION_CHARS
-      ) {
-        return;
-      }
-      await extractTextPiece(
-        { buffer: piece.buffer, text: piece.text.slice(0, mid) },
-        index,
-        depth + 1,
-      );
-      await extractTextPiece(
-        { buffer: piece.buffer, text: piece.text.slice(mid) },
         index,
         depth + 1,
       );
@@ -232,11 +270,18 @@ export const extractDocument = async (
     model: documentModel,
   };
   try {
+    if (signal?.aborted) {
+      throw new ExtractionError(499, "Extraction was cancelled.", "JOB_CANCELLED");
+    }
     const extracted = await extractHeaderFields({
       filePath,
       originalName: fileName,
       apiKey,
       model: documentModel,
+      fields: headerCatalog,
+      // Never pass image bytes through as "plain text".
+      plainText: sendText && !isImage ? officeText : undefined,
+      signal,
     });
     header = extracted.fields;
     headerUsage = extracted.usage;

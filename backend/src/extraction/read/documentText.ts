@@ -2,9 +2,43 @@ import { createRequire } from "node:module";
 import JSZip from "jszip";
 import { PDFDocument } from "pdf-lib";
 import { getDocumentProxy } from "unpdf";
-import { MIN_USABLE_TEXT_CHARS, PDF_PART_PAGES } from "../shared/constants.js";
+import {
+  IMAGE_MEDIA,
+  MIN_USABLE_TEXT_CHARS,
+  PDF_PART_PAGES,
+} from "../shared/constants.js";
 
 export { PDF_PART_PAGES };
+
+/** Resolve image extension from name or file magic bytes. */
+export const sniffImageExtension = (fileName: string, buffer: Buffer) => {
+  const dot = fileName.lastIndexOf(".");
+  const fromName = dot < 0 ? "" : fileName.slice(dot).toLowerCase();
+  if (IMAGE_MEDIA[fromName]) return fromName;
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return ".jpg";
+  }
+  if (
+    buffer.length >= 8 &&
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47
+  ) {
+    return ".png";
+  }
+  if (buffer.length >= 6 && buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46) {
+    return ".gif";
+  }
+  if (
+    buffer.length >= 12 &&
+    buffer.toString("ascii", 0, 4) === "RIFF" &&
+    buffer.toString("ascii", 8, 12) === "WEBP"
+  ) {
+    return ".webp";
+  }
+  return "";
+};
 
 const require = createRequire(import.meta.url);
 const WordExtractor = require("word-extractor") as new () => {
@@ -234,6 +268,8 @@ export const docPlainText = async (buffer: Buffer) => {
 };
 
 export const officePlainText = async (buffer: Buffer, ext: string) => {
+  // Never OCR/parse image binaries as Office/HTML text.
+  if (IMAGE_MEDIA[ext] || sniffImageExtension(ext, buffer)) return "";
   if (looksLikeHtml(buffer)) return htmlPlainText(buffer);
   if (isZip(buffer)) {
     if (ext === ".xls" || ext === ".xlsx") return excelPlainText(buffer);
@@ -261,30 +297,44 @@ export const pdfRowText = async (
   onPage?: (done: number, total: number) => Promise<void>,
 ) => {
   const pdf = await getDocumentProxy(new Uint8Array(buffer));
-  const total = pdf.numPages;
-  const pages: string[] = [];
-  for (let pageNumber = 1; pageNumber <= total; pageNumber += 1) {
-    const page = await pdf.getPage(pageNumber);
-    const content = await page.getTextContent();
-    const items = content.items.flatMap((item) => {
-      const row = item as PdfJsTextItem;
-      const text = row.str ?? "";
-      if (!text.trim()) return [];
-      const transform = row.transform ?? [];
-      return [
-        {
-          str: text,
-          x: transform[4] ?? 0,
-          y: transform[5] ?? 0,
-          height: row.height ?? 0,
-        },
-      ];
-    });
-    const lines = linesFromItems(items);
-    if (lines) pages.push(lines);
-    if (onPage) await onPage(pageNumber, total);
+  try {
+    const total = pdf.numPages;
+    const pages: string[] = [];
+    for (let pageNumber = 1; pageNumber <= total; pageNumber += 1) {
+      const page = await pdf.getPage(pageNumber);
+      try {
+        const content = await page.getTextContent();
+        const items = content.items.flatMap((item) => {
+          const row = item as PdfJsTextItem;
+          const text = row.str ?? "";
+          if (!text.trim()) return [];
+          const transform = row.transform ?? [];
+          return [
+            {
+              str: text,
+              x: transform[4] ?? 0,
+              y: transform[5] ?? 0,
+              height: row.height ?? 0,
+            },
+          ];
+        });
+        const lines = linesFromItems(items);
+        if (lines) pages.push(lines);
+      } finally {
+        page.cleanup?.();
+      }
+      if (onPage) await onPage(pageNumber, total);
+    }
+    return { pageCount: total, text: pages.join("\n") };
+  } finally {
+    // Release pdf.js workers/resources — skipping this makes later PDFs much slower.
+    try {
+      await pdf.cleanup();
+      await pdf.loadingTask.destroy();
+    } catch {
+      /* ignore */
+    }
   }
-  return { pageCount: total, text: pages.join("\n") };
 };
 
 export const splitPdfParts = async (

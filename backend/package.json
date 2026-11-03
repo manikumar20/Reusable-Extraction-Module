@@ -5,10 +5,12 @@
   "type": "module",
   "description": "HTTP API for customer document extraction.",
   "scripts": {
-    "dev": "tsx watch src/server.ts",
+    "dev": "node --import tsx --watch src/server.ts",
+    "start": "node --import tsx src/server.ts",
     "build": "tsc",
-    "start": "node dist/server.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "db:migrate": "node --import tsx config/initDb.ts",
+    "db:init": "node --import tsx config/initDb.ts"
   },
   "engines": {
     "node": ">=20"
@@ -21,6 +23,7 @@
     "jszip": "^3.10.2",
     "multer": "^2.0.2",
     "pdf-lib": "^1.17.1",
+    "pg": "^8.23.1",
     "unpdf": "^1.8.1",
     "word-extractor": "^1.0.4",
     "xlsx": "^0.18.5",
@@ -31,6 +34,10 @@
     "@types/express": "^4.17.23",
     "@types/jszip": "^3.4.0",
     "@types/multer": "^2.3.0",
+    "@types/node": "^22.15.21",
+    "@types/pg": "^8.23.1",
+    "@types/node": "^22.15.21",
+    "@types/node": "^22.15.21",
     "@types/node": "^22.15.21",
     "tsx": "^4.20.6",
     "typescript": "^5.8.3"

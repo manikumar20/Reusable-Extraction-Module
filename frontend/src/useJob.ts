@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { apiUrl } from "./services/api";
 import type { Job } from "./types";
 
 const readJob = (data: string): Job | null => {
@@ -24,7 +25,7 @@ export const useJob = (jobId: string | null) => {
 
     let stopped = false;
     let poll = 0;
-    const source = new EventSource(`/api/jobs/${jobId}/events`);
+    const source = new EventSource(apiUrl(`/jobs/${jobId}/events`));
 
     const apply = (next: Job) => {
       if (stopped || next.id !== jobId) return;
@@ -39,7 +40,7 @@ export const useJob = (jobId: string | null) => {
 
     const pollJob = async () => {
       try {
-        const response = await fetch(`/api/jobs/${jobId}`);
+        const response = await fetch(apiUrl(`/jobs/${jobId}`));
         if (!response.ok) return;
         const next = readJob(await response.text());
         if (next) apply(next);

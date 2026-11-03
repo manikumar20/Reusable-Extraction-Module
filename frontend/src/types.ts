@@ -1,20 +1,9 @@
 export type KeyValuePair = { name: string; value: string };
-export type ExtraFieldValue = string | string[] | KeyValuePair[];
-
-export type Manufacturer = { name: string; partNumber: string };
+export type ManufacturerValue = { name: string; partNumber: string };
+export type ExtraFieldValue = string | string[] | KeyValuePair[] | ManufacturerValue[];
 
 export type ExtractedLine = {
-  customerItemNumber: string;
-  description: string;
-  productName: string;
-  manufacturers: Manufacturer[];
-  manufacturer: string;
-  partNumber: string;
-  quantity: string;
-  unitOfMeasure: string;
-  currency: string;
-  technicalSpecification: string;
-  extraFields?: Record<string, ExtraFieldValue>;
+  fields: Record<string, ExtraFieldValue>;
 };
 
 export type TokenUsage = {
@@ -37,6 +26,11 @@ export type Job = {
   headerUsage: TokenUsage;
   lineCostUsd: number;
   headerCostUsd: number;
+  template?: {
+    name: string;
+    headerKeys: string[];
+    lineKeys: string[];
+  } | null;
   error: { message: string; code: string; status: number } | null;
 };
 
@@ -46,12 +40,29 @@ export type CatalogField = {
   dataType: string;
   description: string;
   isDefault?: boolean;
+  supplierShareable?: boolean;
 };
 
 export type Catalog = {
   header: CatalogField[];
   lines: CatalogField[];
 };
+
+export type StoredDocument = {
+  id: number;
+  fileName: string;
+  documentType: string;
+  mimeType: string;
+  uploadedAt: string;
+};
+
+export const DOCUMENT_TYPES = [
+  "Textura",
+  "Enquiry",
+  "Invoice",
+  "Quote",
+  "Specification",
+] as const;
 
 export type ServerConfig = {
   ready: boolean;

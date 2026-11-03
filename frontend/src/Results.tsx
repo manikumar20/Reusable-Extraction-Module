@@ -1,21 +1,22 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  downloadText,
-  extensionOf,
-  formatManufacturers,
-  formatUsd,
-  formatValue,
-  linesToCsv,
-  manufacturersOf,
-} from "./format";
-import type { Catalog, CatalogField, ExtraFieldValue, ExtractedLine, Job } from "./types";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { extensionOf, formatUsd, formatValue } from "./format";
+import { DocumentsPanel } from "./DocumentsPanel";
+import type {
+  Catalog,
+  CatalogField,
+  ExtraFieldValue,
+  ExtractedLine,
+  Job,
+  StoredDocument,
+} from "./types";
 
 type ResultsProps = {
   catalog: Catalog | null;
   job: Job | null;
+  documents: StoredDocument[];
 };
 
-const NARROW_LINE_FIELDS = new Set(["line_no", "quantity", "uom", "currency"]);
+const NARROW_TYPES = new Set(["NUMBER", "CODE", "DATE", "ENUM"]);
 
 const typedText = new WeakMap<ExtractedLine, Map<string, string>>();
 
@@ -30,51 +31,11 @@ const lineFieldValue = (line: ExtractedLine | null, key: string) => {
   if (!line) return "";
   const typed = typedText.get(line)?.get(key);
   if (typed !== undefined) return typed;
-  if (key === "line_no") return line.customerItemNumber;
-  if (key === "short_description") return line.description;
-  if (key === "product_name") return line.productName;
-  if (key === "technical_specification") return line.technicalSpecification;
-  if (key === "quantity") return line.quantity;
-  if (key === "uom") return line.unitOfMeasure;
-  if (key === "currency") return line.currency;
-  if (key === "manufacturers") return formatManufacturers(line);
-  if (key.startsWith("extra:")) return formatValue(line.extraFields?.[key.slice(6)]);
-  return formatValue(line.extraFields?.[key]);
+  return formatValue(line.fields?.[key]);
 };
 
 const applyLineField = (line: ExtractedLine, key: string, value: string): ExtractedLine => {
-  let next = line;
-  if (key === "line_no") next = { ...line, customerItemNumber: value };
-  else if (key === "short_description") next = { ...line, description: value };
-  else if (key === "product_name") next = { ...line, productName: value };
-  else if (key === "technical_specification") next = { ...line, technicalSpecification: value };
-  else if (key === "quantity") next = { ...line, quantity: value };
-  else if (key === "uom") next = { ...line, unitOfMeasure: value };
-  else if (key === "currency") next = { ...line, currency: value };
-  else if (key === "manufacturers") {
-    const manufacturers = value.split("\n").flatMap((row) => {
-      const separator = row.indexOf(" · ");
-      const name = separator < 0 ? row.trim() : row.slice(0, separator).trim();
-      const partNumber = separator < 0 ? "" : row.slice(separator + 3).trim();
-      return name || partNumber ? [{ name, partNumber }] : [];
-    });
-    next = {
-      ...line,
-      manufacturers,
-      manufacturer: manufacturers[0]?.name ?? "",
-      partNumber: manufacturers[0]?.partNumber ?? "",
-    };
-  } else if (key.startsWith("extra:")) {
-    next = {
-      ...line,
-      extraFields: { ...line.extraFields, [key.slice(6)]: value },
-    };
-  } else {
-    next = {
-      ...line,
-      extraFields: { ...line.extraFields, [key]: value },
-    };
-  }
+  const next = { ...line, fields: { ...line.fields, [key]: value } };
   const previous = typedText.get(line);
   if (previous) typedText.set(next, new Map(previous));
   return rememberText(next, key, value);
@@ -85,44 +46,43 @@ type Draft = {
   lines: ExtractedLine[];
 };
 
-const numberedLines = (lines: ExtractedLine[]) =>
-  lines.map((line, index) => ({
-    ...line,
-    customerItemNumber: String(index + 1),
-  }));
+type ResultTab = "details" | "documents" | "lines";
 
-export const Results = ({ catalog, job }: ResultsProps) => {
+const RESULT_TABS: ResultTab[] = ["details", "documents", "lines"];
+
+export const Results = ({ catalog, job, documents }: ResultsProps) => {
   const [query, setQuery] = useState("");
+  const [tab, setTab] = useState<ResultTab>("details");
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [openLines, setOpenLines] = useState<Set<number>>(() => new Set());
   const touched = useRef(false);
   const header = draft?.header ?? job?.header ?? {};
-  const lines = draft?.lines ?? numberedLines(job?.lines ?? []);
-  const extraFields = useMemo(
-    () => (catalog?.lines ?? []).filter((field) => !field.isDefault),
-    [catalog],
+  const lines = draft?.lines ?? job?.lines ?? [];
+  const template = job?.template ?? null;
+  const headerFields = (catalog?.header ?? []).filter(
+    (field) => !template || template.headerKeys.includes(field.key),
   );
-  const headerFields = catalog?.header ?? [];
+  const lineFields = (catalog?.lines ?? []).filter(
+    (field) => !template || template.lineKeys.includes(field.key),
+  );
   const needle = query.trim().toLowerCase();
   const filtered = lines
     .map((line, index) => ({ line, index }))
     .filter(({ line }) => !needle || haystack(line).includes(needle));
 
-  const defaultFields = useMemo(
-    () => (catalog?.lines ?? []).filter((field) => field.isDefault),
-    [catalog],
-  );
-
   useEffect(() => {
     touched.current = false;
     setQuery("");
+    setTab("details");
     setDraft(null);
+    setOpenLines(new Set());
   }, [job?.id]);
 
   useEffect(() => {
     if (!job || touched.current) return;
     setDraft({
       header: structuredClone(job.header),
-      lines: numberedLines(structuredClone(job.lines)),
+      lines: structuredClone(job.lines),
     });
   }, [job]);
 
@@ -134,7 +94,7 @@ export const Results = ({ catalog, job }: ResultsProps) => {
     setDraft((current) => {
       const base = current ?? {
         header: structuredClone(job.header),
-        lines: numberedLines(structuredClone(job.lines)),
+        lines: structuredClone(job.lines),
       };
       return { ...base, header: { ...base.header, [key]: value } };
     });
@@ -146,7 +106,7 @@ export const Results = ({ catalog, job }: ResultsProps) => {
     setDraft((current) => {
       const base = current ?? {
         header: structuredClone(job.header),
-        lines: numberedLines(structuredClone(job.lines)),
+        lines: structuredClone(job.lines),
       };
       return {
         ...base,
@@ -157,34 +117,13 @@ export const Results = ({ catalog, job }: ResultsProps) => {
     });
   };
 
-  const saveCsv = () => {
-    if (!job) return;
-    downloadText(
-      downloadName(job.fileName, "csv"),
-      linesToCsv(lines, extraFields),
-      "text/csv;charset=utf-8",
-    );
-  };
-
-  const saveJson = () => {
-    if (!job) return;
-    downloadText(
-      downloadName(job.fileName, "json"),
-      JSON.stringify(
-        {
-          fileName: job.fileName,
-          header,
-          lines,
-          usage: job.usage,
-          headerUsage: job.headerUsage,
-          lineCostUsd: job.lineCostUsd,
-          headerCostUsd: job.headerCostUsd,
-        },
-        null,
-        2,
-      ),
-      "application/json",
-    );
+  const toggleLine = (index: number) => {
+    setOpenLines((current) => {
+      const next = new Set(current);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
   };
 
   if (!job) return null;
@@ -199,90 +138,140 @@ export const Results = ({ catalog, job }: ResultsProps) => {
             <p className="file-name">{job.fileName}</p>
           )}
         </div>
-        <div className="actions">
-          <button type="button" onClick={saveCsv} disabled={!lines.length}>
-            Download CSV
-          </button>
-          <button type="button" onClick={saveJson} disabled={job.status === "running" && !lines.length}>
-            Download JSON
-          </button>
-        </div>
       </header>
 
-      <section className="block">
-        <h3>Header</h3>
-        <p className="muted">Correct any value. Downloads use what is on the page.</p>
-        {headerFields.length > 0 ? (
-          <div className="field-grid header-fields">
-            {headerFields.map((field) => (
-              <FieldBox
-                key={field.key}
-                label={field.label}
-                description={field.description}
-                value={formatValue(header[field.key])}
-                onChange={(value) => editHeader(field.key, value)}
-                onFocus={() => {
-                  touched.current = true;
-                }}
-              />
-            ))}
-          </div>
-        ) : (
-          <p className="muted">
-            {job.status === "running"
-              ? "Header fields appear after the line items."
-              : "No header fields were found in this file."}
-          </p>
-        )}
-      </section>
+      {(tab === "details" || tab === "lines") && <p className="muted">Correct any value.</p>}
+      <div className="view-tabs" role="tablist" aria-label="Extracted document">
+        <button
+          type="button"
+          role="tab"
+          id="details-tab"
+          aria-selected={tab === "details"}
+          aria-controls="details-panel"
+          tabIndex={tab === "details" ? 0 : -1}
+          onClick={() => setTab("details")}
+          onKeyDown={(event) => moveTab(event, setTab)}
+        >
+          Details
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="documents-tab"
+          aria-selected={tab === "documents"}
+          aria-controls="documents-panel"
+          tabIndex={tab === "documents" ? 0 : -1}
+          onClick={() => setTab("documents")}
+          onKeyDown={(event) => moveTab(event, setTab)}
+        >
+          Documents <span>{documents.length}</span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="lines-tab"
+          aria-selected={tab === "lines"}
+          aria-controls="lines-panel"
+          tabIndex={tab === "lines" ? 0 : -1}
+          onClick={() => setTab("lines")}
+          onKeyDown={(event) => moveTab(event, setTab)}
+        >
+          Line items <span>{lines.length}</span>
+        </button>
+      </div>
 
-      <section className="block">
-        <div className="block-head">
-          <h3>
-            Line items <span>{lines.length}</span>
-          </h3>
-          {lines.length > 6 && (
-            <input
-              type="search"
-              value={query}
-              placeholder="Search lines"
-              aria-label="Search lines"
-              onChange={(event) => setQuery(event.target.value)}
-            />
-          )}
-        </div>
-        {lines.length === 0 ? (
-          <>
+      {tab === "documents" ? (
+        <section
+          className="block"
+          role="tabpanel"
+          id="documents-panel"
+          aria-labelledby="documents-tab"
+        >
+          <DocumentsPanel documents={documents} />
+        </section>
+      ) : tab === "details" ? (
+        <section
+          className="block"
+          role="tabpanel"
+          id="details-panel"
+          aria-labelledby="details-tab"
+        >
+          {headerFields.length > 0 ? (
+            <div className="field-grid header-fields">
+              {headerFields.map((field) => (
+                <FieldBox
+                  key={field.key}
+                  label={field.label}
+                  description={field.description}
+                  value={formatValue(header[field.key])}
+                  onChange={(value) => editHeader(field.key, value)}
+                  onFocus={() => {
+                    touched.current = true;
+                  }}
+                />
+              ))}
+            </div>
+          ) : (
             <p className="muted">
               {job.status === "running"
-                ? "Waiting for the first line."
-                : "No buy lines were found in this file."}
+                ? "Header fields appear after the line items."
+                : "No header fields were found in this file."}
             </p>
-            <LineFields fields={defaultFields} line={null} extras={[]} />
-          </>
-        ) : filtered.length === 0 ? (
-          <p className="muted">No lines match that search.</p>
-        ) : (
-          <div className="line-list">
-            {filtered.map(({ line, index }) => (
-              <article className="line-card" key={`line-${index}`}>
-                <p className="line-index">Line {index + 1}</p>
-                <LineFields
-                  fields={defaultFields}
+          )}
+        </section>
+      ) : (
+        <section
+          className="block"
+          role="tabpanel"
+          id="lines-panel"
+          aria-labelledby="lines-tab"
+        >
+          {lines.length > 6 && (
+            <div className="block-head">
+              <input
+                type="search"
+                value={query}
+                placeholder="Search lines"
+                aria-label="Search lines"
+                onChange={(event) => setQuery(event.target.value)}
+              />
+            </div>
+          )}
+          {lines.length === 0 ? (
+            <>
+              <p className="muted">
+                {job.status === "running"
+                  ? "Waiting for the first line."
+                  : "No buy lines were found in this file."}
+              </p>
+              <LineFields
+                fields={template ? lineFields : lineFields.filter((field) => field.isDefault)}
+                line={null}
+              />
+            </>
+          ) : filtered.length === 0 ? (
+            <p className="muted">No lines match that search.</p>
+          ) : (
+            <div className="line-list">
+              {filtered.map(({ line, index }) => (
+                <LineCard
+                  key={`line-${index}`}
+                  index={index}
                   line={line}
-                  extras={extraFields.filter(
-                    (field) => field.key in (line.extraFields ?? {}),
-                  )}
+                  fields={lineFields}
+                  templateFields={Boolean(template)}
+                  open={openLines.has(index)}
+                  onToggle={() => toggleLine(index)}
                   onChange={(key, value) => editLine(index, key, value)}
                   onFocus={() => {
                     touched.current = true;
                   }}
                 />
-              </article>
-            ))}
-          </div>
-        )}
-      </section>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
 
       {job.status === "done" && (
         <footer className="sheet-foot">
@@ -293,16 +282,93 @@ export const Results = ({ catalog, job }: ResultsProps) => {
   );
 };
 
-const LineFields = ({
-  fields,
+const LineCard = ({
+  index,
   line,
-  extras,
+  fields,
+  templateFields,
+  open,
+  onToggle,
   onChange,
   onFocus,
 }: {
-  fields: { key: string; label: string; description: string }[];
+  index: number;
+  line: ExtractedLine;
+  fields: CatalogField[];
+  templateFields: boolean;
+  open: boolean;
+  onToggle: () => void;
+  onChange: (key: string, value: string) => void;
+  onFocus: () => void;
+}) => {
+  const defaults = fields.filter((field) => field.isDefault);
+  const titleField =
+    defaults.find((field) => field.dataType === "TEXT") ?? defaults[0] ?? fields[0];
+  const meta = defaults
+    .filter((field) => field.key !== titleField?.key && NARROW_TYPES.has(field.dataType))
+    .slice(0, 3);
+  const title = titleField ? lineFieldValue(line, titleField.key) : "";
+  const detailsId = `line-details-${index}`;
+
+  return (
+    <article className={open ? "line-card open" : "line-card"}>
+      <div className="line-bar" onClick={onToggle}>
+        <div className="line-brief">
+          <p className="line-index">Line {index + 1}</p>
+          <p className={title ? "line-title" : "line-title empty-value"}>{title || "No value"}</p>
+          {meta.map((field) => {
+            const value = lineFieldValue(line, field.key);
+            if (!value) return null;
+            return (
+              <p className="line-meta" key={field.key}>
+                <span>{field.label}</span>
+                {value}
+              </p>
+            );
+          })}
+        </div>
+        <button
+          type="button"
+          className="line-arrow"
+          aria-expanded={open}
+          aria-controls={detailsId}
+          aria-label={open ? `Hide line ${index + 1} details` : `Show line ${index + 1} details`}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggle();
+          }}
+        >
+          <svg viewBox="0 0 24 24" className={open ? "point-up" : undefined} aria-hidden="true">
+            <path d="M6 9l6 6 6-6" />
+          </svg>
+        </button>
+      </div>
+      {open ? (
+        <div id={detailsId}>
+          <LineFields
+            fields={
+              templateFields
+                ? fields
+                : fields.filter((field) => field.isDefault || field.key in (line.fields ?? {}))
+            }
+            line={line}
+            onChange={onChange}
+            onFocus={onFocus}
+          />
+        </div>
+      ) : null}
+    </article>
+  );
+};
+
+const LineFields = ({
+  fields,
+  line,
+  onChange,
+  onFocus,
+}: {
+  fields: CatalogField[];
   line: ExtractedLine | null;
-  extras: CatalogField[];
   onChange?: (key: string, value: string) => void;
   onFocus?: () => void;
 }) => (
@@ -313,19 +379,8 @@ const LineFields = ({
         label={field.label}
         description={field.description}
         value={lineFieldValue(line, field.key)}
-        wide={!NARROW_LINE_FIELDS.has(field.key)}
+        wide={!NARROW_TYPES.has(field.dataType)}
         onChange={onChange ? (value) => onChange(field.key, value) : undefined}
-        onFocus={onFocus}
-      />
-    ))}
-    {extras.map((field) => (
-      <FieldBox
-        key={field.key}
-        label={field.label}
-        description={field.description}
-        value={lineFieldValue(line, `extra:${field.key}`)}
-        wide
-        onChange={onChange ? (value) => onChange(`extra:${field.key}`, value) : undefined}
         onFocus={onFocus}
       />
     ))}
@@ -372,22 +427,22 @@ const FieldBox = ({
   </label>
 );
 
+const moveTab = (
+  event: KeyboardEvent<HTMLButtonElement>,
+  setTab: (tab: ResultTab) => void,
+) => {
+  if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+  event.preventDefault();
+  const current = event.currentTarget.id.replace("-tab", "") as ResultTab;
+  const index = RESULT_TABS.indexOf(current);
+  const step = event.key === "ArrowRight" ? 1 : -1;
+  const next = RESULT_TABS[(index + step + RESULT_TABS.length) % RESULT_TABS.length] ?? "details";
+  setTab(next);
+  document.getElementById(`${next}-tab`)?.focus();
+};
+
 const haystack = (line: ExtractedLine) =>
-  [
-    line.customerItemNumber,
-    line.description,
-    line.productName,
-    line.manufacturer,
-    line.partNumber,
-    line.technicalSpecification,
-    ...manufacturersOf(line).flatMap((maker) => [maker.name, maker.partNumber]),
-    ...Object.values(line.extraFields ?? {}).map((value) => formatValue(value)),
-  ]
+  Object.values(line.fields ?? {})
+    .map((value) => formatValue(value))
     .join(" ")
     .toLowerCase();
-
-const downloadName = (fileName: string, extension: string) => {
-  const dot = fileName.lastIndexOf(".");
-  const stem = dot > 0 ? fileName.slice(0, dot) : fileName;
-  return `${stem}-extracted.${extension}`;
-};

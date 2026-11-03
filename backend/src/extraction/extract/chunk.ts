@@ -52,11 +52,15 @@ export const chunkPlainText = (
 
 export const tailAfterLastItem = (
   text: string,
-  items: { customerItemNumber: string }[],
+  items: { fields: Record<string, unknown> }[],
+  identityKey: string,
 ) => {
   const token = [...items]
     .reverse()
-    .map((item) => item.customerItemNumber.trim())
+    .map((item) => {
+      const value = item.fields[identityKey];
+      return typeof value === "string" ? value.trim() : "";
+    })
     .find((value) => value.length > 0);
   if (!token) return "";
   const at = text.lastIndexOf(`${token}\t`);

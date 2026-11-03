@@ -28,8 +28,12 @@ const acquire = (): Promise<void> => {
 
 const release = () => {
   const next = waiting.shift();
-  if (next) next();
-  else running -= 1;
+  if (next) {
+    // Slot hand-off: keep `running` the same; the waiter already counts as active.
+    next();
+    return;
+  }
+  running = Math.max(0, running - 1);
 };
 
 export const withClaudeSlot = async <T>(run: () => Promise<T>): Promise<T> => {
@@ -40,3 +44,10 @@ export const withClaudeSlot = async <T>(run: () => Promise<T>): Promise<T> => {
     release();
   }
 };
+
+/** Test/diagnostics: how many Claude calls are in flight or queued. */
+export const claudeLimiterStats = () => ({
+  running,
+  waiting: waiting.length,
+  maxConcurrency,
+});

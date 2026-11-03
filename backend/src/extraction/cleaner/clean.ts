@@ -2,12 +2,17 @@ import { EMPTY_MARKERS, FIELD_DATA_TYPES, ITEM_SCOPES } from "../shared/constant
 import type { CatalogField } from "../shared/fields.js";
 
 /**
- * Values for the optional line fields. Default fields keep their own
- * columns; everything else lives in extraFields.
+ * Values for line catalog fields. Every LINE_FIELDS entry is cleaned here
+ * by data type — including defaults and manufacturers.
  */
 
 export type KeyValuePair = { name: string; value: string };
-export type ExtraFieldValue = string | string[] | KeyValuePair[];
+export type ManufacturerOption = { name: string; partNumber: string };
+export type ExtraFieldValue =
+  | string
+  | string[]
+  | KeyValuePair[]
+  | ManufacturerOption[];
 export type LineExtraFields = Record<string, ExtraFieldValue>;
 
 const cleanText = (value: unknown): string => {
@@ -67,6 +72,33 @@ const cleanKeyValues = (value: unknown): KeyValuePair[] => {
   return pairs;
 };
 
+const cleanManufacturers = (value: unknown): ManufacturerOption[] => {
+  const fromOptions = toArray(value)
+    .map((entry) => {
+      if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+        const row = entry as Record<string, unknown>;
+        return {
+          name: cleanText(row.name ?? row.manufacturer),
+          partNumber: cleanText(row.partNumber ?? row.part_number ?? row.mpn),
+        };
+      }
+      if (typeof entry === "string") {
+        return { name: cleanText(entry), partNumber: "" };
+      }
+      return { name: "", partNumber: "" };
+    })
+    .filter((option) => option.name || option.partNumber);
+  if (fromOptions.length) return fromOptions;
+
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const row = value as Record<string, unknown>;
+    const name = cleanText(row.manufacturer ?? row.name);
+    const part = cleanText(row.partNumber ?? row.part_number);
+    if (name || part) return [{ name, partNumber: part }];
+  }
+  return [];
+};
+
 export const cleanExtraFieldValue = (
   field: Pick<CatalogField, "key" | "dataType">,
   value: unknown,
@@ -76,6 +108,8 @@ export const cleanExtraFieldValue = (
       return cleanList(value);
     case FIELD_DATA_TYPES.KEY_VALUE:
       return cleanKeyValues(value);
+    case FIELD_DATA_TYPES.MANUFACTURER_LIST:
+      return cleanManufacturers(value);
     case FIELD_DATA_TYPES.DATE:
       return cleanDate(value);
     case FIELD_DATA_TYPES.ENUM: {
@@ -90,7 +124,7 @@ export const cleanExtraFieldValue = (
   }
 };
 
-/** Keep only the optional line fields, cleaned by data type. */
+/** Keep only the requested catalog fields, cleaned by data type. */
 export const cleanExtraFields = (
   fields: CatalogField[],
   raw: unknown,
@@ -101,7 +135,6 @@ export const cleanExtraFields = (
       : {};
   const cleaned: LineExtraFields = {};
   fields.forEach((field) => {
-    if (field.isDefault) return;
     const value = cleanExtraFieldValue(field, source[field.key]);
     if (isFilled(value)) cleaned[field.key] = value;
   });
@@ -139,7 +172,7 @@ export const mergeExtraFields = (
   return merged;
 };
 
-/** JSON schema for one optional field inside the extraction tool. */
+/** JSON schema for one catalog field inside the extraction tool. */
 export const extraFieldSchema = (
   field: Pick<CatalogField, "key" | "dataType" | "description" | "label">,
 ): Record<string, unknown> => {
@@ -156,6 +189,28 @@ export const extraFieldSchema = (
           additionalProperties: false,
           properties: { name: { type: "string" }, value: { type: "string" } },
           required: ["name", "value"],
+        },
+      };
+    case FIELD_DATA_TYPES.MANUFACTURER_LIST:
+      return {
+        type: "array",
+        description,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            name: {
+              type: "string",
+              description:
+                "Company name only — not vendor id, city, country, or street.",
+            },
+            partNumber: {
+              type: "string",
+              description:
+                "That manufacturer's MPN, Material No, P/N, or equivalent.",
+            },
+          },
+          required: ["name", "partNumber"],
         },
       };
     case FIELD_DATA_TYPES.ENUM:
