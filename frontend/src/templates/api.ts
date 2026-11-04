@@ -109,12 +109,16 @@ export const fetchTemplateDocumentFile = async (templateId: string, documentId: 
   return new File([blob], fileName, { type });
 };
 
-/** Line catalogue only (fields.ts LINE_FIELDS) — used to match sample documents. */
+/** Full catalogue (header + line fields from fields.ts). */
 export const listCatalogFields = async () => {
-  const response = await fetch(apiUrl("/catalog"));
+  const response = await fetch(apiUrl("/extract/catalog"));
   if (!response.ok) throw new Error(await errorMessage(response, "The field catalog could not be loaded."));
   const payload = (await response.json()) as { header?: CatalogField[]; lines?: CatalogField[] };
-  return payload.lines ?? [];
+  return {
+    header: payload.header ?? [],
+    lines: payload.lines ?? [],
+    all: [...(payload.header ?? []), ...(payload.lines ?? [])],
+  };
 };
 
 export const suggestFields = async (file: File) => {

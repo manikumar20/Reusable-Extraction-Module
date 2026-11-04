@@ -296,7 +296,7 @@
 
 .tm-layout {
   display: grid;
-  grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
   gap: 14px;
   flex: 1;
   min-height: 0;
@@ -321,8 +321,14 @@
   min-height: 0;
   padding: 16px 18px 18px;
   background:
-    radial-gradient(circle at 100% 0%, rgba(52, 71, 212, 0.08), transparent 34%),
+    radial-gradient(circle at 0% 0%, rgba(52, 71, 212, 0.1), transparent 32%),
+    radial-gradient(circle at 100% 100%, rgba(14, 165, 233, 0.08), transparent 28%),
     #f3f5f9;
+}
+
+.tm-canvas {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(238, 241, 246, 0.95));
 }
 
 .tm-panel-head { margin-bottom: 12px; }
@@ -464,23 +470,147 @@
   overflow: hidden;
 }
 
+.tm-fields {
+  padding: 12px 10px;
+  background:
+    linear-gradient(165deg, #ffffff 0%, #f8f9fd 55%, #f3f6fb 100%);
+  border-color: #d8deea;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.8) inset,
+    0 12px 28px rgba(15, 23, 42, 0.05);
+}
+
+.tm-fields .tm-panel-head {
+  padding-bottom: 8px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid #e8ecf4;
+}
+
+.tm-fields .tm-panel-head h2 {
+  margin: 0 0 2px;
+  font-size: 0.95rem;
+  font-weight: 750;
+  color: #111827;
+  letter-spacing: -0.01em;
+}
+
+.tm-fields .tm-caption {
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: #6b7280;
+}
+
 .tm-field-group {
   display: grid;
+  gap: 7px;
+  margin-bottom: 12px;
+}
+
+.tm-field-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  margin-bottom: 16px;
+}
+
+.tm-field-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #e8ecf6;
+  color: #374151;
+  font-size: 0.68rem;
+  font-weight: 750;
+}
+
+.tm-line-group {
+  gap: 6px;
+  margin-bottom: 8px;
+  padding: 8px;
+  border: 1px solid #e2e7f0;
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, #f7f8fc 0%, #eef1f7 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.tm-line-group .tm-field-group-title {
+  color: #4b5563;
+}
+
+.tm-line-rail {
+  display: grid;
+  gap: 4px;
+  max-height: 38vh;
+  overflow: auto;
+  padding-right: 2px;
+  scrollbar-width: thin;
+}
+
+.tm-field-item {
+  margin-bottom: 0;
+}
+
+.tm-field-group > .tm-field-item + .tm-field-item {
+  margin-top: 0;
+}
+
+.tm-fields .tm-field-row {
+  padding: 7px 6px 7px 10px;
+  border-radius: 10px;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.tm-fields .tm-field-name {
+  font-size: 0.82rem;
+}
+
+.tm-fields .tm-type {
+  display: none;
+}
+
+.tm-field-item.compact .tm-field-row {
+  padding: 5px 4px 5px 8px;
+  border-radius: 8px;
+  min-height: 32px;
+  border-color: #e5e9f2;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+}
+
+.tm-field-item.compact .tm-field-name {
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.tm-field-item.compact .tm-field-x,
+.tm-field-item.compact .tm-field-accept {
+  width: 22px !important;
+  height: 22px !important;
+  min-width: 22px !important;
+  border-radius: 6px;
+  font-size: 0.9rem !important;
+}
+
+.tm-line-empty {
+  margin: 0;
+  padding: 6px 2px 2px;
+  font-size: 0.74rem;
+  color: #9ca3af;
 }
 
 .tm-field-group-title {
   margin: 0;
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0.02em;
+  font-size: 0.68rem;
+  font-weight: 750;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
   color: #6b7280;
-}
-
-.tm-field-item {
-  margin-bottom: 8px;
 }
 
 .tm-field-actions {
@@ -500,13 +630,16 @@
   display: grid;
   gap: 8px;
   margin-top: auto;
-  padding-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #e8ecf4;
 }
 
 .tm-field-tools .tm-btn {
   width: 100%;
-  height: 40px;
+  height: 36px;
+  font-size: 0.84rem;
   font-weight: 650;
+  border-radius: 10px;
 }
 
 .tm-match {
@@ -540,8 +673,6 @@
 }
 
 .tm-add:hover { background: #f8f9fb; }
-
-.tm-canvas { background: #eef1f6; }
 
 .tm-canvas-head {
   display: flex;
@@ -757,6 +888,9 @@
 
 @media (max-width: 980px) {
   .tm-layout { grid-template-columns: 1fr; }
+  .tm-fields { order: 2; max-height: 48vh; }
+  .tm-canvas { order: 1; min-height: 420px; }
+  .tm-line-rail { max-height: 28vh; }
   .tm-builder-head { flex-direction: column; align-items: stretch; }
   .tm-builder-title { flex-wrap: wrap; }
   .tm-builder .tm-name { max-width: none; }

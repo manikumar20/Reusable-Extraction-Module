@@ -30,6 +30,10 @@ export const ExtractPage = () => {
   }, []);
 
   useEffect(() => {
+    document.title = "Extract · ExtractIQ";
+  }, []);
+
+  useEffect(() => {
     const prevent = (event: DragEvent) => event.preventDefault();
     window.addEventListener("dragover", prevent);
     window.addEventListener("drop", prevent);
@@ -44,8 +48,8 @@ export const ExtractPage = () => {
     const load = async () => {
       try {
         const [configResponse, catalogResponse, active] = await Promise.all([
-          fetch(apiUrl("/config")),
-          fetch(apiUrl("/catalog")),
+          fetch(apiUrl("/extract/config")),
+          fetch(apiUrl("/extract/catalog")),
           getActiveTemplate().catch(() => null),
         ]);
         if (!configResponse.ok || !catalogResponse.ok) throw new Error("unavailable");
@@ -69,12 +73,36 @@ export const ExtractPage = () => {
 
   const onFile = async (file: File) => {
     setUploadError("");
+    if (!activeTemplate) {
+      setUploadError("Set an active template under Templates before extracting.");
+      return;
+    }
     setUploading(true);
     try {
       const body = new FormData();
       body.append("file", file);
-      // Server applies the active template; no client template payload required.
-      const response = await fetch(apiUrl("/jobs"), { method: "POST", body });
+      const fieldKey = (field: (typeof activeTemplate.fields)[number]) =>
+        field.catalogKey?.trim() ||
+        field.name
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "_")
+          .replace(/^_+|_+$/g, "");
+      body.append(
+        "template",
+        JSON.stringify({
+          name: activeTemplate.name,
+          headerKeys: activeTemplate.fields
+            .filter((field) => field.level === "header")
+            .map(fieldKey)
+            .filter(Boolean),
+          lineKeys: activeTemplate.fields
+            .filter((field) => field.level !== "header")
+            .map(fieldKey)
+            .filter(Boolean),
+        }),
+      );
+      const response = await fetch(apiUrl("/extract"), { method: "POST", body });
       const payload = (await response.json().catch(() => null)) as {
         id?: string;
         error?: { message?: string };
@@ -93,6 +121,15 @@ export const ExtractPage = () => {
 
   return (
     <main className="upload-page">
+      <header className="extract-page-head">
+        <div>
+          <h1>Extract</h1>
+          <p>
+            Upload a customer file. Header and line fields follow the active template
+            {activeTemplate ? ` (${activeTemplate.name})` : ""}.
+          </p>
+        </div>
+      </header>
       {offline && (
         <p className="banner">
           The extraction service is not running. Start the backend, then refresh.

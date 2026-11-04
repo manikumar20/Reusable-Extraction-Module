@@ -1,12 +1,12 @@
 import fs from "node:fs/promises";
-import { HEADER_FIELDS, LINE_FIELDS } from "../../extraction/shared/fields.js";
-import type { ExtraFieldValue } from "../../extraction/cleaner/clean.js";
-import { extractDocument } from "../../extraction/extract/run.js";
+import { HEADER_FIELDS, LINE_FIELDS } from "../extract/engine/shared/fields.js";
+import type { ExtraFieldValue } from "../extract/engine/cleaner/clean.js";
+import { extractDocument } from "../extract/engine/extract/run.js";
 import {
   lineFieldValues,
   type ExtractedLine,
-} from "../../extraction/extract/records.js";
-import { apiKey, documentModel, recordModel } from "../../app.js";
+} from "../extract/engine/extract/records.js";
+import { apiKey, documentModel, recordModel } from "../../config/runtime.js";
 
 const catalog = [...HEADER_FIELDS, ...LINE_FIELDS];
 const labels = new Map(catalog.map((field) => [field.key, field.label]));

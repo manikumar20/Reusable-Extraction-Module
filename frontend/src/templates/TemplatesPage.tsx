@@ -1,51 +1,55 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { activateTemplate, deleteTemplate, listTemplates } from "./api";
 import "./templates.css";
 import {
   clearRememberedTemplate,
   rememberTemplate,
-  TEMPLATE_CATEGORIES,
   type TemplateSummary,
 } from "./types";
 
-const categories = ["All", ...TEMPLATE_CATEGORIES];
+const PAGE_SIZE = 20;
 
 export const TemplatesPage = () => {
   const navigate = useNavigate();
-  const [category, setCategory] = useState("All");
-  const [query, setQuery] = useState("");
   const [templates, setTemplates] = useState<TemplateSummary[]>([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [activatingId, setActivatingId] = useState<string | null>(null);
-  const filtering = category !== "All" || query.trim().length > 0;
+  const [page, setPage] = useState(1);
 
-  const refresh = () =>
-    listTemplates({ category, query }).then((rows) => {
-      setTemplates(rows);
-      setError("");
-    });
+  useEffect(() => {
+    document.title = "Templates · ExtractIQ";
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
-    const timer = window.setTimeout(() => {
-      setLoading(true);
-      refresh()
-        .catch((reason: unknown) => {
-          if (!cancelled) setError(reason instanceof Error ? reason.message : "Templates could not be loaded.");
-        })
-        .finally(() => {
-          if (!cancelled) setLoading(false);
-        });
-    }, 200);
+    setLoading(true);
+    listTemplates({ category: "All", query: "" })
+      .then((rows) => {
+        if (cancelled) return;
+        setTemplates(rows);
+        setError("");
+        setPage(1);
+      })
+      .catch((reason: unknown) => {
+        if (!cancelled) setError(reason instanceof Error ? reason.message : "Templates could not be loaded.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
     return () => {
       cancelled = true;
-      window.clearTimeout(timer);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [category, query]);
+  }, []);
+
+  const pageCount = Math.max(1, Math.ceil(templates.length / PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount);
+  const visible = useMemo(() => {
+    const start = (currentPage - 1) * PAGE_SIZE;
+    return templates.slice(start, start + PAGE_SIZE);
+  }, [templates, currentPage]);
 
   const onDelete = async (template: TemplateSummary) => {
     if (!window.confirm(`Delete template “${template.name}”? This cannot be undone.`)) return;
@@ -54,7 +58,12 @@ export const TemplatesPage = () => {
     try {
       await deleteTemplate(template.id);
       if (template.active) clearRememberedTemplate();
-      setTemplates((current) => current.filter((row) => row.id !== template.id));
+      setTemplates((current) => {
+        const next = current.filter((row) => row.id !== template.id);
+        const nextPages = Math.max(1, Math.ceil(next.length / PAGE_SIZE));
+        setPage((value) => Math.min(value, nextPages));
+        return next;
+      });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Template could not be deleted.");
     } finally {
@@ -78,7 +87,7 @@ export const TemplatesPage = () => {
     }
   };
 
-  const emptyLibrary = !loading && !filtering && templates.length === 0;
+  const emptyLibrary = !loading && templates.length === 0;
 
   return (
     <section className="tm">
@@ -90,100 +99,98 @@ export const TemplatesPage = () => {
           </p>
         </div>
         <div className="tm-header-actions">
-          <input
-            className="tm-search"
-            type="search"
-            value={query}
-            placeholder="Search templates"
-            aria-label="Search templates"
-            onChange={(event) => setQuery(event.target.value)}
-          />
           <button type="button" className="tm-btn tm-btn-primary" onClick={() => navigate("/templates/new")}>
             New template
           </button>
         </div>
       </header>
 
-      <div className="tm-chips" role="tablist" aria-label="Template categories">
-        {categories.map((item) => (
-          <button
-            key={item}
-            type="button"
-            className={item === category ? "tm-chip active" : "tm-chip"}
-            aria-pressed={item === category}
-            onClick={() => setCategory(item)}
-          >
-            {item}
-          </button>
-        ))}
-      </div>
-
       {error && <p className="tm-error">{error}</p>}
       {loading && <p className="tm-note">Loading templates…</p>}
 
-      {!loading && filtering && templates.length === 0 ? (
-        <div className="tm-empty">
-          <p className="tm-note">No templates match your search.</p>
-          <SampleUploadCard />
-        </div>
-      ) : emptyLibrary ? (
+      {emptyLibrary ? (
         <div className="tm-empty">
           <p className="tm-note">No templates yet. Upload one example, or start from a blank field list.</p>
           <SampleUploadCard />
         </div>
       ) : (
         !loading && (
-          <div className="tm-grid">
-            {templates.map((template) => (
-              <article className={template.active ? "tm-card tm-card-active" : "tm-card"} key={template.id}>
-                <div className="tm-card-top">
-                  <h3>{template.name}</h3>
-                  <div className="tm-card-top-meta">
-                    {template.active && <span className="tm-active-badge">Active</span>}
-                    <span className="tm-version">v{template.version}</span>
+          <>
+            <div className="tm-grid">
+              {visible.map((template) => (
+                <article className={template.active ? "tm-card tm-card-active" : "tm-card"} key={template.id}>
+                  <div className="tm-card-top">
+                    <h3>{template.name}</h3>
+                    <div className="tm-card-top-meta">
+                      {template.active && <span className="tm-active-badge">Active</span>}
+                      <span className="tm-version">v{template.version}</span>
+                      <button
+                        type="button"
+                        className="tm-card-x"
+                        aria-label={`Delete ${template.name}`}
+                        disabled={deletingId === template.id}
+                        onClick={() => void onDelete(template)}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+                  <div className="tm-card-fields">
+                    {template.fields.slice(0, 4).map((field) => (
+                      <span className="tm-chip" key={field.id}>
+                        {field.name}
+                      </span>
+                    ))}
+                    {template.fields.length > 4 && (
+                      <span className="tm-chip">+{template.fields.length - 4}</span>
+                    )}
+                  </div>
+                  <p className="tm-stats">{statsLine(template)}</p>
+                  <div className="tm-card-actions">
                     <button
                       type="button"
-                      className="tm-card-x"
-                      aria-label={`Delete ${template.name}`}
-                      disabled={deletingId === template.id}
-                      onClick={() => void onDelete(template)}
+                      className={template.active ? "tm-btn tm-btn-active" : "tm-btn tm-btn-primary"}
+                      disabled={template.active || activatingId === template.id}
+                      onClick={() => void onActivate(template)}
                     >
-                      ×
+                      {template.active
+                        ? "Active for extraction"
+                        : activatingId === template.id
+                          ? "Setting…"
+                          : "Set as active"}
+                    </button>
+                    <button type="button" className="tm-btn" onClick={() => navigate(`/templates/${template.id}/edit`)}>
+                      Edit
                     </button>
                   </div>
-                </div>
-                <div className="tm-card-fields">
-                  {template.fields.slice(0, 4).map((field) => (
-                    <span className="tm-chip" key={field.id}>
-                      {field.name}
-                    </span>
-                  ))}
-                  {template.fields.length > 4 && (
-                    <span className="tm-chip">+{template.fields.length - 4}</span>
-                  )}
-                </div>
-                <p className="tm-stats">{statsLine(template)}</p>
-                <div className="tm-card-actions">
-                  <button
-                    type="button"
-                    className={template.active ? "tm-btn tm-btn-active" : "tm-btn tm-btn-primary"}
-                    disabled={template.active || activatingId === template.id}
-                    onClick={() => void onActivate(template)}
-                  >
-                    {template.active
-                      ? "Active for extraction"
-                      : activatingId === template.id
-                        ? "Setting…"
-                        : "Set as active"}
-                  </button>
-                  <button type="button" className="tm-btn" onClick={() => navigate(`/templates/${template.id}/edit`)}>
-                    Edit
-                  </button>
-                </div>
-              </article>
-            ))}
-            <SampleUploadCard />
-          </div>
+                </article>
+              ))}
+              {currentPage === pageCount && <SampleUploadCard />}
+            </div>
+            {pageCount > 1 && (
+              <nav className="tm-pager" aria-label="Template pages">
+                <button
+                  type="button"
+                  className="tm-btn"
+                  disabled={currentPage <= 1}
+                  onClick={() => setPage((value) => Math.max(1, value - 1))}
+                >
+                  Previous
+                </button>
+                <span>
+                  Page {currentPage} of {pageCount} · {templates.length} templates · {PAGE_SIZE} per page
+                </span>
+                <button
+                  type="button"
+                  className="tm-btn"
+                  disabled={currentPage >= pageCount}
+                  onClick={() => setPage((value) => Math.min(pageCount, value + 1))}
+                >
+                  Next
+                </button>
+              </nav>
+            )}
+          </>
         )
       )}
     </section>

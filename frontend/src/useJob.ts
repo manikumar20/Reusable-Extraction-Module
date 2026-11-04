@@ -25,7 +25,7 @@ export const useJob = (jobId: string | null) => {
 
     let stopped = false;
     let poll = 0;
-    const source = new EventSource(apiUrl(`/jobs/${jobId}/events`));
+    const source = new EventSource(apiUrl(`/extract/${jobId}/events`));
 
     const apply = (next: Job) => {
       if (stopped || next.id !== jobId) return;
@@ -40,7 +40,7 @@ export const useJob = (jobId: string | null) => {
 
     const pollJob = async () => {
       try {
-        const response = await fetch(apiUrl(`/jobs/${jobId}`));
+        const response = await fetch(apiUrl(`/extract/${jobId}`));
         if (!response.ok) return;
         const next = readJob(await response.text());
         if (next) apply(next);

@@ -4,12 +4,15 @@ const itemClass = ({ isActive }: { isActive: boolean }) => (isActive ? "nav-item
 
 export const Sidebar = () => (
   <header className="topbar">
-    <NavLink to="/" className="mark" aria-label="Home">
-      DX
+    <NavLink to="/" className="brand-lockup" aria-label="ExtractIQ home">
+      <span className="mark" aria-hidden="true">
+        EQ
+      </span>
+      <span className="brand-name">ExtractIQ</span>
     </NavLink>
     <nav className="nav" aria-label="Pages">
       <NavLink to="/" end className={itemClass}>
-        Data Extraction
+        Extract
       </NavLink>
       <NavLink to="/templates" className={itemClass}>
         Templates

@@ -150,6 +150,22 @@ a.nav-item { text-decoration: none; }
 
 .sidebar .brand span { color: #c7d2fe; font-size: 0.82rem; font-weight: 500; }
 
+.brand-lockup {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+  color: inherit;
+}
+
+.brand-name {
+  font-family: "Plus Jakarta Sans", "Segoe UI", sans-serif;
+  font-size: 1.05rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: #111827;
+}
+
 .mark {
   display: grid;
   place-items: center;
@@ -164,6 +180,25 @@ a.nav-item { text-decoration: none; }
   font-weight: 800;
   letter-spacing: -0.04em;
   text-decoration: none;
+}
+
+.extract-page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 4px;
+}
+
+.extract-page-head h1 {
+  margin: 0;
+  font-size: 1.85rem;
+}
+
+.extract-page-head p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  max-width: 52ch;
 }
 
 .brand .mark { color: #ffffff; }

@@ -13,31 +13,15 @@ import {
 } from "./api";
 import { DocumentStage } from "./DocumentStage";
 import { FieldList } from "./FieldList";
-import type { SourceDocument } from "./matching";
-import "./templates.css";
 import {
-  dataTypeToFieldType,
-  type FieldSuggestions,
-  type TemplateCategory,
-  type TemplateField,
-} from "./types";
+  fieldsFromSuggestions,
+  newTemplateField,
+  type SourceDocument,
+} from "./matching";
+import "./templates.css";
+import { type TemplateCategory, type TemplateField } from "./types";
 
 const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp"]);
-
-const newField = (partial?: Partial<TemplateField>): TemplateField => ({
-  id: partial?.id || crypto.randomUUID(),
-  name: partial?.name || "New field",
-  type: partial?.type || "text",
-  required: partial?.required ?? false,
-  hint: partial?.hint,
-  format: partial?.format,
-  validation: partial?.validation,
-  sampleBox: partial?.sampleBox,
-  catalogKey: partial?.catalogKey,
-  level: partial?.level ?? "line",
-  suggested: partial?.suggested,
-  sampleValue: partial?.sampleValue,
-});
 
 const fileKey = (file: File) => `${file.name}:${file.size}:${file.lastModified}`;
 
@@ -51,103 +35,6 @@ const rejectReason = (file: File) => {
     return IMAGE_EXTENSIONS.has(extension) ? "Images must be 5 MB or smaller." : "File is larger than 25 MB.";
   }
   return "";
-};
-
-/**
- * Build the template field list from sample suggestions.
- * - matched: only keys that exist in LINE_FIELDS (fields.ts)
- * - suggested: values found in the file that are NOT in the catalogue (accept or reject)
- * - keptAccepted: customs the user already accepted (no catalogue key)
- */
-const fieldsFromSuggestions = (
-  docs: SourceDocument[],
-  dismissed: Set<string>,
-  keptAccepted: TemplateField[],
-  catalog: CatalogField[],
-) => {
-  const byKey = new Map(catalog.map((field) => [field.key, field]));
-  const acceptedIds = new Set(keptAccepted.map((field) => field.id));
-  const ready = docs.filter((document) => document.status === "ready" && document.suggestions);
-  const matchedVotes = new Map<
-    string,
-    { label: string; type: TemplateField["type"]; hits: number; sampleValue?: string }
-  >();
-  const suggestedVotes = new Map<
-    string,
-    { label: string; type: TemplateField["type"]; description: string; hits: number; sampleValue?: string }
-  >();
-
-  for (const document of ready) {
-    const suggestions = document.suggestions as FieldSuggestions;
-    const seenMatched = new Set<string>();
-    for (const hit of suggestions.matched) {
-      // Only real line-catalogue keys from fields.ts
-      if (!byKey.has(hit.key) || dismissed.has(hit.key) || seenMatched.has(hit.key)) continue;
-      seenMatched.add(hit.key);
-      const catalogField = byKey.get(hit.key)!;
-      const row = matchedVotes.get(hit.key) ?? {
-        label: catalogField.label,
-        type: dataTypeToFieldType(catalogField.dataType),
-        hits: 0,
-        sampleValue: hit.sampleValue,
-      };
-      row.hits += 1;
-      row.label = catalogField.label;
-      if (hit.sampleValue) row.sampleValue = hit.sampleValue;
-      matchedVotes.set(hit.key, row);
-    }
-    const seenSuggested = new Set<string>();
-    for (const hit of suggestions.suggested) {
-      // Never treat a catalogue key as a custom suggestion
-      if (byKey.has(hit.key) || dismissed.has(hit.key) || acceptedIds.has(hit.key) || seenSuggested.has(hit.key)) {
-        continue;
-      }
-      seenSuggested.add(hit.key);
-      const row = suggestedVotes.get(hit.key) ?? {
-        label: hit.label,
-        type: dataTypeToFieldType(hit.dataType),
-        description: hit.description,
-        hits: 0,
-        sampleValue: hit.sampleValue,
-      };
-      row.hits += 1;
-      row.label = hit.label;
-      row.description = hit.description;
-      if (hit.sampleValue) row.sampleValue = hit.sampleValue;
-      suggestedVotes.set(hit.key, row);
-    }
-  }
-
-  const docCount = Math.max(ready.length, 1);
-  const matched = [...matchedVotes.entries()]
-    .filter(([, row]) => row.hits >= Math.ceil(docCount / 2))
-    .map(([key, row]) =>
-      newField({
-        id: `matched:${key}`,
-        name: row.label,
-        type: row.type,
-        catalogKey: key,
-        level: "line",
-        sampleValue: row.sampleValue,
-        required: false,
-        suggested: false,
-      }),
-    );
-  const suggested = [...suggestedVotes.entries()]
-    .filter(([, row]) => row.hits >= Math.ceil(docCount / 2))
-    .map(([key, row]) =>
-      newField({
-        id: key,
-        name: row.label,
-        type: row.type,
-        level: "line",
-        suggested: true,
-        sampleValue: row.sampleValue,
-        hint: row.description,
-      }),
-    );
-
-  return [...matched, ...suggested, ...keptAccepted];
 };
 
 export const TemplateBuilderPage = () => {
@@ -170,6 +57,7 @@ export const TemplateBuilderPage = () => {
   const queue = useRef<SourceDocument[]>([]);
   const activeReads = useRef(0);
   const catalog = useRef<CatalogField[]>([]);
+  const headerCatalogKeys = useRef(new Set<string>());
   const selected = fields.find((field) => field.id === selectedId) ?? null;
 
   const rebuild = (docs: SourceDocument[]) => {
@@ -178,7 +66,13 @@ export const TemplateBuilderPage = () => {
       const keptAccepted = current.filter(
         (field) => !field.catalogKey && !field.suggested && !dismissed.current.has(field.id),
       );
-      const next = fieldsFromSuggestions(docs, dismissed.current, keptAccepted, catalog.current);
+      const next = fieldsFromSuggestions(
+        docs,
+        dismissed.current,
+        keptAccepted,
+        catalog.current,
+        headerCatalogKeys.current,
+      );
       const priorMatched = new Map(
         current
           .filter((field) => field.catalogKey)
@@ -294,7 +188,9 @@ export const TemplateBuilderPage = () => {
     let cancelled = false;
     listCatalogFields()
       .then((fieldsFromCatalog) => {
-        if (!cancelled) catalog.current = fieldsFromCatalog;
+        if (cancelled) return;
+        catalog.current = fieldsFromCatalog.all;
+        headerCatalogKeys.current = new Set(fieldsFromCatalog.header.map((field) => field.key));
       })
       .catch(() => undefined);
     return () => {
@@ -412,6 +308,26 @@ export const TemplateBuilderPage = () => {
       </header>
       {error && <p className="tm-error">{error}</p>}
       <div className="tm-layout">
+        <DocumentStage
+          documents={documents}
+          activeId={activeId}
+          fields={fields}
+          selectedFieldId={selectedId}
+          onAdd={addFiles}
+          onSelect={setActiveId}
+          onRemove={(documentId) => {
+            setDocuments((current) => {
+              const next = current.filter((document) => document.id !== documentId);
+              setActiveId((currentId) => (currentId === documentId ? (next[0]?.id ?? null) : currentId));
+              rebuild(next);
+              return next;
+            });
+          }}
+          onMap={(box) => {
+            if (!selected) return;
+            updateField({ ...selected, sampleBox: box });
+          }}
+        />
         <FieldList
           fields={fields}
           selectedId={selectedId}
@@ -435,7 +351,7 @@ export const TemplateBuilderPage = () => {
             setSelectedId(next[0]?.id ?? null);
           }}
           onAdd={() => {
-            const field = newField();
+            const field = newTemplateField();
             setFields((current) => [...current, field]);
             setSelectedId(field.id);
           }}
@@ -446,26 +362,6 @@ export const TemplateBuilderPage = () => {
             const next = fields.filter((field) => field.id !== fieldId);
             setFields(next);
             setSelectedId(next[0]?.id ?? null);
-          }}
-        />
-        <DocumentStage
-          documents={documents}
-          activeId={activeId}
-          fields={fields}
-          selectedFieldId={selectedId}
-          onAdd={addFiles}
-          onSelect={setActiveId}
-          onRemove={(documentId) => {
-            setDocuments((current) => {
-              const next = current.filter((document) => document.id !== documentId);
-              setActiveId((currentId) => (currentId === documentId ? (next[0]?.id ?? null) : currentId));
-              rebuild(next);
-              return next;
-            });
-          }}
-          onMap={(box) => {
-            if (!selected) return;
-            updateField({ ...selected, sampleBox: box });
           }}
         />
       </div>
