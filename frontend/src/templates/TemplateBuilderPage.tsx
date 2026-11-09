@@ -51,33 +51,54 @@ export const TemplateBuilderPage = () => {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
-  const [fieldQuery, setFieldQuery] = useState("");
   const dismissed = useRef(new Set<string>());
   const started = useRef(false);
   const readingIds = useRef(new Set<string>());
-  const queue = useRef<SourceDocument[]>([]);
-  const activeReads = useRef(0);
+  const documentsRef = useRef<SourceDocument[]>([]);
   const catalog = useRef<CatalogField[]>([]);
   const headerCatalogKeys = useRef(new Set<string>());
-  const selected = fields.find((field) => field.id === selectedId) ?? null;
-
-  const rebuild = (docs: SourceDocument[]) => {
+  /** Fields loaded from an existing template (kept when a sample has no suggestions yet). */
+  const seedFields = useRef<TemplateField[]>([]);
+  /** Left panel shows fields for the selected file only (not a merge of every upload). */
+  const rebuildForFile = (docs: SourceDocument[], fileId: string | null) => {
+    const focus = docs.find((document) => document.id === fileId) ?? null;
     setFields((current) => {
-      // Keep customs the user accepted or added manually (not pending suggestions).
-      const keptAccepted = current.filter(
-        (field) => !field.catalogKey && !field.suggested && !dismissed.current.has(field.id),
+      // Customs the user accepted or added manually stay across file switches.
+      const keptCustoms = current.filter(
+        (field) =>
+          !field.suggested &&
+          !field.catalogKey &&
+          !dismissed.current.has(field.id),
       );
-      const next = fieldsFromSuggestions(
-        docs,
-        dismissed.current,
-        keptAccepted,
-        catalog.current,
-        headerCatalogKeys.current,
-      );
+      if (!focus?.suggestions) {
+        const seed = seedFields.current.filter(
+          (field) =>
+            !dismissed.current.has(field.id) &&
+            !(field.catalogKey && dismissed.current.has(field.catalogKey)),
+        );
+        const seedIds = new Set(seed.map((field) => field.id));
+        const fallback = [
+          ...seed,
+          ...keptCustoms.filter((field) => !seedIds.has(field.id)),
+        ];
+        setSelectedId((currentId) =>
+          currentId && fallback.some((field) => field.id === currentId)
+            ? currentId
+            : (fallback[0]?.id ?? null),
+        );
+        return fallback;
+      }
       const priorMatched = new Map(
         current
           .filter((field) => field.catalogKey)
           .map((field) => [field.catalogKey as string, field]),
+      );
+      const next = fieldsFromSuggestions(
+        [focus],
+        dismissed.current,
+        keptCustoms,
+        catalog.current,
+        headerCatalogKeys.current,
       );
       const merged = next.map((field) => {
         if (!field.catalogKey) return field;
@@ -97,67 +118,128 @@ export const TemplateBuilderPage = () => {
     });
   };
 
-  const pumpQueue = () => {
-    while (activeReads.current < 3 && queue.current.length) {
-      const document = queue.current.shift();
-      if (!document || readingIds.current.has(document.id)) continue;
-      readingIds.current.add(document.id);
-      activeReads.current += 1;
-      void (async () => {
-        try {
-          const suggestions = await suggestFields(document.file);
-          setDocuments((current) => {
-            const next = current.map((item) =>
-              item.id === document.id
-                ? { ...item, status: "ready" as const, suggestions, message: undefined }
-                : item,
-            );
-            rebuild(next);
-            return next;
-          });
-        } catch (reason) {
-          const message = reason instanceof Error ? reason.message : "This document could not be read.";
-          setDocuments((current) =>
-            current.map((item) =>
-              item.id === document.id
-                ? { ...item, status: "error" as const, message, suggestions: undefined }
-                : item,
-            ),
-          );
-        } finally {
-          activeReads.current -= 1;
-          pumpQueue();
-        }
-      })();
+  /** Persist union of every sample's matched fields + accepted customs + seed fields. */
+  const fieldsForSave = (current: TemplateField[]) => {
+    const customs = current.filter((field) => !field.suggested && !field.catalogKey);
+    const edits = new Map(
+      current
+        .filter((field) => field.catalogKey && !field.suggested)
+        .map((field) => [field.catalogKey as string, field]),
+    );
+    const fromAll = fieldsFromSuggestions(
+      documentsRef.current,
+      dismissed.current,
+      [],
+      catalog.current,
+      headerCatalogKeys.current,
+    ).filter((field) => !field.suggested && field.catalogKey);
+    const byKey = new Map<string, TemplateField>();
+    for (const field of fromAll) {
+      const key = field.catalogKey as string;
+      if (dismissed.current.has(key)) continue;
+      const edited = edits.get(key);
+      byKey.set(key, edited ? { ...field, ...edited, catalogKey: key } : field);
+    }
+    for (const [key, field] of edits) {
+      if (!byKey.has(key) && !dismissed.current.has(key)) byKey.set(key, field);
+    }
+    for (const field of seedFields.current) {
+      if (field.catalogKey) {
+        if (dismissed.current.has(field.catalogKey) || byKey.has(field.catalogKey)) continue;
+        byKey.set(field.catalogKey, field);
+      }
+    }
+    const customIds = new Set(customs.map((field) => field.id));
+    const seedCustoms = seedFields.current.filter(
+      (field) =>
+        !field.catalogKey &&
+        !dismissed.current.has(field.id) &&
+        !customIds.has(field.id),
+    );
+    return [...byKey.values(), ...customs, ...seedCustoms];
+  };
+
+  const extractFile = async (document: SourceDocument) => {
+    if (readingIds.current.has(document.id)) return;
+    readingIds.current.add(document.id);
+
+    // Ensure status is reading
+    setDocuments((current) =>
+      current.map((item) =>
+        item.id === document.id
+          ? { ...item, status: "reading" as const, message: undefined }
+          : item,
+      ),
+    );
+
+    try {
+      const suggestions = await suggestFields(document.file);
+      setDocuments((current) =>
+        current.map((item) =>
+          item.id === document.id
+            ? { ...item, status: "ready" as const, suggestions, message: undefined }
+            : item,
+        ),
+      );
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "This document could not be read.";
+      setDocuments((current) =>
+        current.map((item) =>
+          item.id === document.id
+            ? { ...item, status: "error" as const, message, suggestions: undefined }
+            : item,
+        ),
+      );
+    } finally {
+      readingIds.current.delete(document.id);
     }
   };
 
   const addFiles = (incomingFiles: File[]) => {
     setError("");
-    const created: SourceDocument[] = [];
-    setDocuments((current) => {
-      const known = new Set(current.map((document) => fileKey(document.file)));
-      const additions: SourceDocument[] = [];
-      for (const file of incomingFiles) {
-        const key = fileKey(file);
-        if (known.has(key)) continue;
-        known.add(key);
-        const problem = rejectReason(file);
-        additions.push({
-          id: crypto.randomUUID(),
-          file,
-          status: problem ? "error" : "reading",
-          message: problem || undefined,
-        });
+    const currentDocs = documentsRef.current;
+    const known = new Set(currentDocs.map((document) => fileKey(document.file)));
+    const additions: SourceDocument[] = [];
+
+    for (const file of incomingFiles) {
+      const key = fileKey(file);
+      const existing = currentDocs.find((d) => fileKey(d.file) === key);
+      if (existing) {
+        // Re-extract file if already present
+        void extractFile(existing);
+        continue;
       }
-      created.push(...additions);
-      if (!additions.length) return current;
-      setActiveId((currentId) => currentId ?? additions[0]?.id ?? null);
-      return [...current, ...additions];
+      known.add(key);
+      const problem = rejectReason(file);
+      additions.push({
+        id: crypto.randomUUID(),
+        file,
+        status: problem ? "error" : "reading",
+        message: problem || undefined,
+      });
+    }
+
+    if (!additions.length) return;
+
+    documentsRef.current = [...documentsRef.current, ...additions];
+    setDocuments((current) => [...current, ...additions]);
+    setActiveId((currentId) => currentId ?? additions[0]?.id ?? null);
+
+    // Launch extraction immediately for every valid readable file!
+    const valid = additions.filter((doc) => doc.status === "reading");
+    valid.forEach((doc) => {
+      void extractFile(doc);
     });
-    queue.current.push(...created.filter((document) => document.status === "reading"));
-    pumpQueue();
   };
+
+  useEffect(() => {
+    documentsRef.current = documents;
+    const focusId = activeId ?? documents[0]?.id ?? null;
+    const focus = documents.find((document) => document.id === focusId);
+    if (focus?.suggestions || documents.some((document) => document.suggestions)) {
+      rebuildForFile(documents, focusId);
+    }
+  }, [documents, activeId]);
 
   /** Show saved sample files without re-running Claude suggest. */
   const showStoredFiles = (files: File[]) => {
@@ -193,12 +275,9 @@ export const TemplateBuilderPage = () => {
         catalog.current = fieldsFromCatalog.all;
         headerCatalogKeys.current = new Set(fieldsFromCatalog.header.map((field) => field.key));
         // Re-apply suggestions once the catalogue arrives (suggest can finish first).
-        setDocuments((current) => {
-          if (current.some((document) => document.status === "ready" && document.suggestions)) {
-            rebuild(current);
-          }
-          return current;
-        });
+        if (documentsRef.current.some((document) => document.status === "ready" && document.suggestions)) {
+          rebuildForFile(documentsRef.current, activeId ?? documentsRef.current[0]?.id ?? null);
+        }
       })
       .catch(() => undefined);
     return () => {
@@ -216,6 +295,7 @@ export const TemplateBuilderPage = () => {
         setName(template.name);
         setCategory(template.category);
         setVersion(template.version);
+        seedFields.current = template.fields;
         setFields(template.fields);
         setSelectedId(template.fields[0]?.id ?? null);
 
@@ -246,22 +326,17 @@ export const TemplateBuilderPage = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const updateField = (next: TemplateField) => {
-    setFields((current) => current.map((field) => (field.id === next.id ? next : field)));
-  };
-
-  const validate = () => {
-    const named = fields.map((field) => field.name.trim()).filter(Boolean);
-    if (!name.trim()) return "Enter a template name.";
-    if (!named.length) return "Add at least one field.";
-    if (new Set(named.map((item) => item.toLowerCase())).size !== named.length) {
-      return "Field names must be unique.";
-    }
-    return "";
-  };
-
   const persist = async () => {
-    const problem = validate();
+    const toSave = fieldsForSave(fields);
+    const problem = (() => {
+      const named = toSave.map((field) => field.name.trim()).filter(Boolean);
+      if (!name.trim()) return "Enter a template name.";
+      if (!named.length) return "Add at least one field.";
+      if (new Set(named.map((item) => item.toLowerCase())).size !== named.length) {
+        return "Field names must be unique.";
+      }
+      return "";
+    })();
     if (problem) {
       setError(problem);
       return;
@@ -273,15 +348,13 @@ export const TemplateBuilderPage = () => {
         id,
         name: name.trim(),
         category,
-        fields: fields
-          .filter((field) => !field.suggested)
-          .map((field) => ({
-            ...field,
-            name: field.name.trim(),
-            level: field.level ?? "line",
-            suggested: undefined,
-            sampleValue: undefined,
-          })),
+        fields: toSave.map((field) => ({
+          ...field,
+          name: field.name.trim(),
+          level: field.level ?? "line",
+          suggested: undefined,
+          sampleValue: undefined,
+        })),
       });
       await saveTemplateDocuments(
         saved.id,
@@ -295,11 +368,26 @@ export const TemplateBuilderPage = () => {
     }
   };
 
-  const addField = () => {
-    const field = newTemplateField();
+  const addField = (name?: string) => {
+    const field = newTemplateField({
+      name: name?.trim() || "New field",
+      hint: name?.trim() ? "Custom field you added." : undefined,
+      suggested: false,
+    });
     setFields((current) => [...current, field]);
     setSelectedId(field.id);
   };
+
+  const acceptAllSuggested = () => {
+    setFields((current) =>
+      current.map((field) =>
+        field.suggested ? { ...field, suggested: false, catalogKey: undefined } : field,
+      ),
+    );
+  };
+
+  const readingCount = documents.filter((d) => d.status === "reading").length;
+  const isExtracting = readingCount > 0;
 
   return (
     <section className="tm tm-builder tm-studio">
@@ -321,18 +409,17 @@ export const TemplateBuilderPage = () => {
           </nav>
           <span className="tm-version">v{version}.0</span>
           <span className="tm-badge tm-badge-active">Draft</span>
+          {isExtracting && (
+            <span className="tm-extracting-pill" title="Processing files simultaneously">
+              <span className="tm-extract-spinner sm" aria-hidden="true" />
+              Extracting {readingCount} file{readingCount > 1 ? "s" : ""} simultaneously…
+            </span>
+          )}
         </div>
         <div className="tm-builder-actions">
-          <input
-            className="tm-search"
-            type="search"
-            placeholder="Search fields…"
-            value={fieldQuery}
-            onChange={(event) => setFieldQuery(event.target.value)}
-            aria-label="Search fields"
-          />
-          <button type="button" className="tm-btn" onClick={addField}>
-            + Add Field
+          <button type="button" className="tm-btn tm-btn-primary has-plus" onClick={() => addField()}>
+            <span className="tm-btn-plus" aria-hidden="true">+</span>
+            Add Field
           </button>
           <button type="button" className="tm-btn tm-btn-primary" disabled={saving} onClick={() => void persist()}>
             {saving ? "Saving…" : "Save & Publish"}
@@ -344,9 +431,11 @@ export const TemplateBuilderPage = () => {
         <FieldList
           fields={fields}
           selectedId={selectedId}
-          query={fieldQuery}
+          activeFileName={documents.find((document) => document.id === activeId)?.file.name}
+          isExtracting={Boolean(
+            documents.find((document) => document.id === activeId)?.status === "reading",
+          )}
           onSelect={setSelectedId}
-          onReorder={setFields}
           onAccept={(fieldId) =>
             setFields((current) =>
               current.map((field) =>
@@ -356,6 +445,7 @@ export const TemplateBuilderPage = () => {
               ),
             )
           }
+          onAcceptAll={acceptAllSuggested}
           onReject={(fieldId) => {
             const removed = fields.find((field) => field.id === fieldId);
             if (removed?.catalogKey) dismissed.current.add(removed.catalogKey);
@@ -377,21 +467,14 @@ export const TemplateBuilderPage = () => {
         <DocumentStage
           documents={documents}
           activeId={activeId}
-          fields={fields}
-          selectedFieldId={selectedId}
           onAdd={addFiles}
           onSelect={setActiveId}
           onRemove={(documentId) => {
             setDocuments((current) => {
               const next = current.filter((document) => document.id !== documentId);
               setActiveId((currentId) => (currentId === documentId ? (next[0]?.id ?? null) : currentId));
-              rebuild(next);
               return next;
             });
-          }}
-          onMap={(box) => {
-            if (!selected) return;
-            updateField({ ...selected, sampleBox: box });
           }}
         />
       </div>

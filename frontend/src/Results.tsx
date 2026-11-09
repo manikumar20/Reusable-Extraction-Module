@@ -1,12 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  Check,
   ChevronLeft,
   ChevronRight,
   Download,
   FileSpreadsheet,
   FileJson,
-  Flag,
   Minus,
   Plus,
   RotateCcw,
@@ -51,8 +49,6 @@ type ReviewItem = {
   lineIndex?: number;
   fieldKey?: string;
 };
-
-type ConfidenceFilter = "all" | "high" | "review";
 
 const typedText = new WeakMap<ExtractedLine, Map<string, string>>();
 
@@ -137,7 +133,6 @@ export const Results = ({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [approved, setApproved] = useState(false);
   const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<ConfidenceFilter>("all");
   const [exportOpen, setExportOpen] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewKind, setPreviewKind] = useState<"pdf" | "image" | "none">("none");
@@ -311,12 +306,10 @@ export const Results = ({
     const needle = query.trim().toLowerCase();
     return items.filter((item) => {
       if (item.status === "deleted" as ReviewItem["status"]) return false;
-      if (filter === "high" && item.confidence < 90) return false;
-      if (filter === "review" && item.confidence >= 90) return false;
       if (!needle) return true;
       return `${item.label} ${item.value} ${item.details}`.toLowerCase().includes(needle);
     });
-  }, [filter, items, query]);
+  }, [items, query]);
 
   const activeItems = items.filter((item) => item.status !== ("deleted" as ReviewItem["status"]));
   const selected = items.find((item) => item.id === selectedId) ?? null;
@@ -514,11 +507,7 @@ export const Results = ({
   return (
     <section className="flex min-h-[calc(100vh-88px)] flex-1 flex-col gap-3 text-[var(--ink)]">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <button
-          type="button"
-          onClick={onBack}
-          className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-[var(--line)] bg-[var(--sheet)] px-3 text-sm font-semibold text-[var(--muted)] shadow-sm transition hover:bg-[var(--hover)] hover:text-[var(--ink-strong)]"
-        >
+        <button type="button" onClick={onBack} className="app-btn-ghost">
           <ArrowLeft className="h-4 w-4" />
           {backLabel}
         </button>
@@ -528,7 +517,7 @@ export const Results = ({
               type="button"
               disabled={job.status !== "done"}
               onClick={() => setExportOpen((open) => !open)}
-              className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-[var(--line)] bg-[var(--sheet)] px-3 text-sm font-semibold text-[var(--ink)] shadow-sm transition hover:bg-[var(--hover)] disabled:cursor-not-allowed disabled:opacity-45"
+              className="app-btn-ghost"
             >
               <Download className="h-4 w-4" />
               Export
@@ -555,7 +544,7 @@ export const Results = ({
               setItems((current) => current.map((item) => ({ ...item, status: item.status === "flagged" ? item.status : "accepted" })));
               onNextDocument?.();
             }}
-            className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-[var(--accent)] px-3.5 text-sm font-bold text-[var(--on-accent)] shadow-sm transition hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-45"
+            className="app-btn-primary"
           >
             <CheckCircle2 className="h-4 w-4" />
             Confirm &amp; Approve Data
@@ -563,7 +552,7 @@ export const Results = ({
         </div>
       </div>
 
-      <div ref={shellRef} className="flex min-h-[620px] flex-1 overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--sheet)] shadow-sm">
+      <div ref={shellRef} className="flex min-h-[620px] flex-1 overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--sheet)] shadow-[0_18px_40px_rgba(15,23,42,0.08)]">
         <section
           ref={(node) => {
             leftPaneRef.current = node;
@@ -572,7 +561,7 @@ export const Results = ({
           style={{ width: `${split}%` }}
           aria-label="Document viewer"
         >
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--line)] px-3 py-2">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--line)] bg-[var(--soft)] px-3 py-2.5">
             <div className="inline-flex items-center gap-1">
               <button type="button" className={toolBtn} disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))} aria-label="Previous page">
                 <ChevronLeft className="h-4 w-4" />
@@ -588,7 +577,7 @@ export const Results = ({
               <button type="button" className={toolBtn} onClick={() => setZoom((value) => Math.max(0.6, roundZoom(value - 0.1)))} aria-label="Zoom out">
                 <Minus className="h-4 w-4" />
               </button>
-              <span className="w-12 text-center text-xs font-semibold">{Math.round(zoom * 100)}%</span>
+              <span className="w-12 text-center text-xs font-semibold tabular-nums">{Math.round(zoom * 100)}%</span>
               <button type="button" className={toolBtn} onClick={() => setZoom((value) => Math.min(1.8, roundZoom(value + 0.1)))} aria-label="Zoom in">
                 <Plus className="h-4 w-4" />
               </button>
@@ -598,8 +587,8 @@ export const Results = ({
             </div>
           </div>
 
-          <div ref={viewerRef} className="relative min-h-0 flex-1 overflow-auto bg-[var(--soft)] p-4">
-            <div className="relative mx-auto bg-white shadow-lg ring-1 ring-slate-200" style={{ width: sheetWidth }}>
+          <div ref={viewerRef} className="relative min-h-0 flex-1 overflow-auto bg-[radial-gradient(circle_at_top,color-mix(in_srgb,var(--accent)_8%,transparent),transparent_42%),var(--soft)] p-5">
+            <div className="relative mx-auto overflow-hidden rounded-xl bg-white shadow-[0_16px_40px_rgba(15,23,42,0.12)] ring-1 ring-slate-200/80" style={{ width: sheetWidth }}>
               {(previewKind === "pdf" || previewKind === "image") && previewUrl ? (
                 <div className="relative" data-highlight-layer>
                   {previewKind === "image" ? (
@@ -639,10 +628,15 @@ export const Results = ({
                     })}
                 </div>
               ) : (
-                <div className="grid min-h-[420px] place-items-center p-8 text-center">
-                  <div>
-                    <p className="text-sm font-semibold text-slate-700">No live preview for this file type</p>
-                    <p className="mt-1 text-xs text-slate-500">Review extracted values on the right. PDF and image uploads show bounding highlights here.</p>
+                <div className="grid min-h-[420px] place-items-center bg-[linear-gradient(180deg,#f8fafc,#eef2f7)] p-10 text-center">
+                  <div className="max-w-sm">
+                    <div className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-white text-sky-600 shadow-sm ring-1 ring-slate-200">
+                      <FileJson className="h-5 w-5" />
+                    </div>
+                    <p className="m-0 text-sm font-bold text-slate-800">No live preview for this file type</p>
+                    <p className="mt-1.5 mb-0 text-xs leading-relaxed text-slate-500">
+                      Review and edit extracted values on the right. PDF and image uploads show bounding highlights here.
+                    </p>
                   </div>
                 </div>
               )}
@@ -662,12 +656,15 @@ export const Results = ({
           <span className="absolute left-1/2 top-1/2 h-10 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--muted)] opacity-40 group-hover:bg-[var(--accent)] group-hover:opacity-100" />
         </button>
 
-        <aside className="flex min-h-0 min-w-0 flex-col" style={{ width: `${100 - split}%` }}>
-          <div className="border-b border-[var(--line)] px-4 py-3">
-            <div className="rounded-xl border border-[var(--line)] bg-[var(--soft)] p-3">
-              <div className="flex flex-wrap items-start justify-between gap-2">
+        <aside className="flex min-h-0 min-w-0 flex-col bg-[var(--sheet)]" style={{ width: `${100 - split}%` }}>
+          <div className="border-b border-[var(--line)] px-4 py-4">
+            <div className="rounded-2xl border border-[var(--line)] bg-[linear-gradient(180deg,var(--soft),var(--sheet))] p-4 shadow-[0_1px_0_rgba(255,255,255,0.04)_inset]">
+              <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <h2 className="truncate text-sm font-bold text-[var(--ink-strong)]" title={job.fileName}>
+                  <p className="m-0 text-[11px] font-bold uppercase tracking-[0.08em] text-[var(--faint)]">
+                    Extracted fields
+                  </p>
+                  <h2 className="mt-1 truncate text-[15px] font-bold tracking-[-0.02em] text-[var(--ink-strong)]" title={job.fileName}>
                     {job.fileName}
                   </h2>
                   <p className="mt-1 text-xs text-[var(--muted)]">Processed {processedAt}</p>
@@ -695,143 +692,100 @@ export const Results = ({
             </div>
 
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              <label className="relative min-w-[180px] flex-1">
-                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--faint)]" />
+              <label className="relative min-w-[200px] flex-1">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--faint)]" />
                 <input
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
                   placeholder="Search fields…"
-                  className="h-9 w-full rounded-lg border border-[var(--line)] bg-[var(--sheet)] pl-8 pr-3 text-sm outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)]"
+                  className="h-10 w-full rounded-[12px] border border-[var(--line)] bg-[var(--soft)] pl-9 pr-3 text-sm text-[var(--ink)] outline-none transition focus:border-[var(--accent)] focus:bg-[var(--sheet)] focus:ring-2 focus:ring-[var(--accent-soft)]"
                 />
               </label>
-              <select
-                value={filter}
-                onChange={(event) => setFilter(event.target.value as ConfidenceFilter)}
-                className="h-9 rounded-lg border border-[var(--line)] bg-[var(--sheet)] px-2.5 text-sm font-semibold text-[var(--ink)]"
-                aria-label="Filter by confidence"
-              >
-                <option value="all">All</option>
-                <option value="high">High Confidence</option>
-                <option value="review">Needs Review</option>
-              </select>
-              <button
-                type="button"
-                onClick={addItem}
-                className="inline-flex h-9 items-center gap-1 rounded-lg border border-dashed border-[var(--line-strong)] px-3 text-sm font-semibold text-[var(--ink-soft)] transition hover:border-[var(--accent)] hover:text-[var(--accent)]"
-              >
-                <Plus className="h-4 w-4" />
+              <button type="button" onClick={addItem} className="app-btn-primary has-plus">
+                <span className="app-btn-plus" aria-hidden="true">+</span>
                 Add New Item
               </button>
             </div>
           </div>
 
-          <div ref={tableRef} className="min-h-0 flex-1 overflow-auto">
+          <div ref={tableRef} className="min-h-0 flex-1 overflow-auto px-2 pb-2">
             <table className="w-full border-collapse text-left text-sm">
               <thead className="sticky top-0 z-10 bg-[var(--sheet)]">
-                <tr className="border-b border-[var(--line)] text-[11px] uppercase tracking-wide text-[var(--faint)]">
-                  <th className="px-3 py-2 font-bold">#</th>
-                  <th className="px-3 py-2 font-bold">Field / Label</th>
-                  <th className="px-3 py-2 font-bold">Extracted Value</th>
-                  <th className="px-3 py-2 font-bold">Details</th>
-                  <th className="px-3 py-2 font-bold">AI Confidence</th>
-                  <th className="px-3 py-2 font-bold">Actions</th>
+                <tr className="border-b border-[var(--line)] text-[11px] uppercase tracking-[0.06em] text-[var(--faint)]">
+                  <th className="w-10 px-3 py-3 font-bold">#</th>
+                  <th className="min-w-[140px] px-3 py-3 font-bold">Field / Label</th>
+                  <th className="min-w-[160px] px-3 py-3 font-bold">Extracted Value</th>
+                  <th className="min-w-[160px] px-3 py-3 font-bold">Details</th>
+                  <th className="w-12 px-2 py-3 text-right font-bold" aria-label="Delete" />
                 </tr>
               </thead>
               <tbody>
                 {visibleItems.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-3 py-10 text-center text-[var(--muted)]">
-                      No extracted items match this search or filter.
+                    <td colSpan={5} className="px-3 py-14 text-center">
+                      <p className="m-0 text-sm font-semibold text-[var(--ink-soft)]">No matching fields</p>
+                      <p className="mt-1 mb-0 text-xs text-[var(--muted)]">Try another search, or add a new item.</p>
                     </td>
                   </tr>
                 ) : (
-                  visibleItems.map((item) => {
-                    const tone = confidenceTone(item.confidence);
-                    return (
-                      <tr
-                        key={item.id}
-                        data-item={item.id}
-                        onClick={() => selectItem(item)}
-                        className={`cursor-pointer border-b border-[var(--line)] transition hover:bg-[var(--hover)] ${
-                          selectedId === item.id ? "bg-[var(--accent-soft)]" : ""
-                        } ${item.status === "flagged" ? "bg-amber-50/60" : ""} ${item.status === "accepted" ? "bg-emerald-50/40" : ""}`}
-                      >
-                        <td className="px-3 py-2 align-top text-xs font-semibold text-[var(--muted)]">{item.itemNumber}</td>
-                        <td className="px-3 py-2 align-top">
-                          <input
-                            value={item.label}
-                            onClick={(event) => event.stopPropagation()}
-                            onChange={(event) => editItem(item.id, { label: event.target.value })}
-                            className="w-full rounded-md border border-transparent bg-transparent px-1.5 py-1 text-sm font-semibold text-[var(--ink-strong)] outline-none hover:border-[var(--line)] focus:border-[var(--accent)] focus:bg-[var(--sheet)]"
-                          />
-                        </td>
-                        <td className="px-3 py-2 align-top">
-                          <input
-                            value={item.value}
-                            onClick={(event) => event.stopPropagation()}
-                            onChange={(event) => editItem(item.id, { value: event.target.value, sourceSnippet: event.target.value })}
-                            className="w-full rounded-md border border-transparent bg-transparent px-1.5 py-1 text-sm text-[var(--ink)] outline-none hover:border-[var(--line)] focus:border-[var(--accent)] focus:bg-[var(--sheet)]"
-                          />
-                        </td>
-                        <td className="px-3 py-2 align-top">
-                          <input
-                            value={item.details}
-                            onClick={(event) => event.stopPropagation()}
-                            onChange={(event) => editItem(item.id, { details: event.target.value })}
-                            className="w-full rounded-md border border-transparent bg-transparent px-1.5 py-1 text-xs text-[var(--muted)] outline-none hover:border-[var(--line)] focus:border-[var(--accent)] focus:bg-[var(--sheet)]"
-                          />
-                        </td>
-                        <td className="px-3 py-2 align-top">
-                          <span
-                            className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-bold ring-1 ${
-                              tone === "high"
-                                ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
-                                : tone === "mid"
-                                  ? "bg-amber-50 text-amber-700 ring-amber-200"
-                                  : "bg-rose-50 text-rose-700 ring-rose-200"
-                            }`}
-                          >
-                            {item.confidence}%
-                          </span>
-                        </td>
-                        <td className="px-3 py-2 align-top" onClick={(event) => event.stopPropagation()}>
-                          <div className="flex items-center gap-1">
-                            <button
-                              type="button"
-                              title="Accept"
-                              className="grid h-8 w-8 place-items-center rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 transition hover:bg-emerald-100"
-                              onClick={() => editItem(item.id, { status: "accepted" })}
-                            >
-                              <Check className="h-3.5 w-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              title="Flag for review"
-                              className="grid h-8 w-8 place-items-center rounded-lg border border-amber-200 bg-amber-50 text-amber-700 transition hover:bg-amber-100"
-                              onClick={() => editItem(item.id, { status: "flagged" })}
-                            >
-                              <Flag className="h-3.5 w-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              title="Delete row"
-                              className="grid h-8 w-8 place-items-center rounded-lg border border-rose-200 bg-rose-50 text-rose-700 transition hover:bg-rose-100"
-                              onClick={() => removeItem(item.id)}
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })
+                  visibleItems.map((item) => (
+                    <tr
+                      key={item.id}
+                      data-item={item.id}
+                      onClick={() => selectItem(item)}
+                      className={`group cursor-pointer border-b border-[var(--line)] transition ${
+                        selectedId === item.id
+                          ? "bg-[var(--accent-soft)]"
+                          : "hover:bg-[var(--hover)]"
+                      }`}
+                    >
+                      <td className="px-3 py-3 align-middle text-xs font-bold tabular-nums text-[var(--faint)]">
+                        {item.itemNumber}
+                      </td>
+                      <td className="px-3 py-2.5 align-middle">
+                        <input
+                          value={item.label}
+                          onClick={(event) => event.stopPropagation()}
+                          onChange={(event) => editItem(item.id, { label: event.target.value })}
+                          className="w-full rounded-lg border border-transparent bg-transparent px-2 py-1.5 text-sm font-semibold text-[var(--ink-strong)] outline-none transition hover:border-[var(--line)] hover:bg-[var(--sheet)] focus:border-[var(--accent)] focus:bg-[var(--sheet)] focus:ring-2 focus:ring-[var(--accent-soft)]"
+                        />
+                      </td>
+                      <td className="px-3 py-2.5 align-middle">
+                        <input
+                          value={item.value}
+                          onClick={(event) => event.stopPropagation()}
+                          onChange={(event) => editItem(item.id, { value: event.target.value, sourceSnippet: event.target.value })}
+                          className="w-full rounded-lg border border-transparent bg-transparent px-2 py-1.5 text-sm text-[var(--ink)] outline-none transition hover:border-[var(--line)] hover:bg-[var(--sheet)] focus:border-[var(--accent)] focus:bg-[var(--sheet)] focus:ring-2 focus:ring-[var(--accent-soft)]"
+                        />
+                      </td>
+                      <td className="px-3 py-2.5 align-middle">
+                        <input
+                          value={item.details}
+                          onClick={(event) => event.stopPropagation()}
+                          onChange={(event) => editItem(item.id, { details: event.target.value })}
+                          className="w-full rounded-lg border border-transparent bg-transparent px-2 py-1.5 text-xs leading-relaxed text-[var(--muted)] outline-none transition hover:border-[var(--line)] hover:bg-[var(--sheet)] focus:border-[var(--accent)] focus:bg-[var(--sheet)] focus:ring-2 focus:ring-[var(--accent-soft)]"
+                        />
+                      </td>
+                      <td className="px-2 py-2.5 align-middle text-right" onClick={(event) => event.stopPropagation()}>
+                        <button
+                          type="button"
+                          title="Delete row"
+                          aria-label={`Delete ${item.label || "row"}`}
+                          className="inline-grid h-8 w-8 place-items-center rounded-lg border border-transparent text-[var(--faint)] opacity-70 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600 hover:opacity-100 group-hover:opacity-100"
+                          onClick={() => removeItem(item.id)}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))
                 )}
               </tbody>
             </table>
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--line)] px-4 py-3">
-            <p className="text-xs text-[var(--muted)]">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--line)] bg-[var(--soft)] px-4 py-3">
+            <p className="m-0 text-xs text-[var(--muted)]">
               {selected ? `Focused: ${selected.label}` : "Select a row to highlight its source on the document."}
               {approved ? " · Approved" : ""}
             </p>
@@ -842,7 +796,7 @@ export const Results = ({
                 setApproved(true);
                 onNextDocument?.();
               }}
-              className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-[var(--accent)] px-4 text-sm font-bold text-[var(--on-accent)] shadow-sm transition hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-45"
+              className="app-btn-primary"
             >
               <CheckCircle2 className="h-4 w-4" />
               Confirm &amp; Approve Data
@@ -855,7 +809,7 @@ export const Results = ({
 };
 
 const toolBtn =
-  "grid h-8 w-8 place-items-center rounded-lg border border-[var(--line)] bg-[var(--soft)] text-[var(--ink)] transition hover:bg-[var(--hover)] disabled:opacity-40";
+  "grid h-8 w-8 place-items-center rounded-lg border border-[var(--line)] bg-[var(--sheet)] text-[var(--ink)] shadow-sm transition hover:bg-[var(--hover)] disabled:opacity-40";
 
 const escapeXml = (value: string) =>
   value

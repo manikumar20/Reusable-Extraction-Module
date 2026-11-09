@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { FALLBACK_ACCEPT } from "../format";
 import {
   activateTemplate,
   clearActiveTemplate,
@@ -12,16 +13,6 @@ import {
   rememberTemplate,
   type TemplateSummary,
 } from "./types";
-
-const HUB_FILTERS = ["All", "Finance", "Healthcare", "HR & Legal"] as const;
-
-const categoryMatches = (template: TemplateSummary, filter: string) => {
-  if (filter === "All") return true;
-  if (filter === "Finance") return template.category === "Finance";
-  if (filter === "HR & Legal") return template.category === "HR" || template.category === "Legal";
-  if (filter === "Healthcare") return template.category === "Identity";
-  return template.category === filter;
-};
 
 const categorySubtitle = (category: string) => {
   if (category === "Finance") return "Finance & Accounts Payable";
@@ -55,9 +46,9 @@ export const TemplatesPage = () => {
   const [activatingId, setActivatingId] = useState<string | null>(null);
   const [deactivating, setDeactivating] = useState(false);
   const [query, setQuery] = useState("");
-  const [category, setCategory] = useState<(typeof HUB_FILTERS)[number]>("All");
   const [createOpen, setCreateOpen] = useState(false);
   const [createName, setCreateName] = useState("Untitled template");
+  const [createFiles, setCreateFiles] = useState<File[]>([]);
 
   useEffect(() => {
     document.title = "Templates · ExtractIQ";
@@ -92,14 +83,13 @@ export const TemplatesPage = () => {
     const needle = query.trim().toLowerCase();
     return templates.filter((template) => {
       if (active && template.id === active.id) return false;
-      if (!categoryMatches(template, category)) return false;
       if (!needle) return true;
       return (
         template.name.toLowerCase().includes(needle) ||
         template.category.toLowerCase().includes(needle)
       );
     });
-  }, [templates, active, category, query]);
+  }, [templates, active, query]);
 
   const onDelete = async (template: TemplateSummary) => {
     if (!window.confirm(`Delete template “${template.name}”? This cannot be undone.`)) return;
@@ -150,41 +140,6 @@ export const TemplatesPage = () => {
     <section className="tm hub">
       {error && <p className="tm-error">{error}</p>}
       {loading && <p className="tm-note">Loading templates…</p>}
-
-      {!loading && (
-        <div className="hub-library-tools">
-          <label className="hub-search-wrap">
-            <span className="hub-search-icon" aria-hidden="true">
-              ⌕
-            </span>
-            <input
-              className="hub-search"
-              type="search"
-              placeholder="Search templates"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              aria-label="Search templates"
-            />
-          </label>
-          <select
-            className="hub-category"
-            aria-label="Template category"
-            value={category}
-            onChange={(event) =>
-              setCategory(event.target.value as (typeof HUB_FILTERS)[number])
-            }
-          >
-            {HUB_FILTERS.map((filter) => (
-              <option key={filter} value={filter}>
-                {filter}
-              </option>
-            ))}
-          </select>
-          <button type="button" className="hub-btn-primary create" onClick={() => setCreateOpen(true)}>
-            + Create New Template
-          </button>
-        </div>
-      )}
 
       {!loading && active && (
         <article className="hub-hero compact">
@@ -249,6 +204,28 @@ export const TemplatesPage = () => {
       )}
 
       {!loading && (
+        <div className="hub-library-tools">
+          <label className="hub-search-wrap">
+            <span className="hub-search-icon" aria-hidden="true">
+              ⌕
+            </span>
+            <input
+              className="hub-search"
+              type="search"
+              placeholder="Search templates"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              aria-label="Search templates"
+            />
+          </label>
+          <button type="button" className="hub-create-btn" onClick={() => setCreateOpen(true)}>
+            <span className="hub-create-icon" aria-hidden="true">+</span>
+            Create New Template
+          </button>
+        </div>
+      )}
+
+      {!loading && (
         <section className="hub-library">
           <div className="hub-library-bar">
             <h3>
@@ -259,12 +236,13 @@ export const TemplatesPage = () => {
           {emptyLibrary ? (
             <div className="hub-empty-library">
               <p>No templates yet. Create one to get started.</p>
-              <button type="button" className="hub-btn-primary" onClick={() => setCreateOpen(true)}>
-                + Create New Template
+              <button type="button" className="hub-create-btn" onClick={() => setCreateOpen(true)}>
+                <span className="hub-create-icon" aria-hidden="true">+</span>
+                Create New Template
               </button>
             </div>
           ) : filtered.length === 0 ? (
-            <p className="tm-note">No templates match that search or category.</p>
+            <p className="tm-note">No templates match that search.</p>
           ) : (
             <div className="hub-grid">
               {filtered.map((template) => (
@@ -347,8 +325,54 @@ export const TemplatesPage = () => {
                 autoFocus
               />
             </label>
+            <div className="hub-modal-field">
+              <span className="hub-modal-label">
+                Sample documents (select multiple or one by one)
+              </span>
+              <label className="hub-modal-dropzone">
+                <span>📁 Choose sample files (Multiple supported)</span>
+                <input
+                  type="file"
+                  multiple
+                  hidden
+                  accept={FALLBACK_ACCEPT.join(",")}
+                  onChange={(event) => {
+                    const added = [...(event.target.files ?? [])];
+                    if (added.length) {
+                      setCreateFiles((current) => [...current, ...added]);
+                    }
+                    event.target.value = "";
+                  }}
+                />
+              </label>
+              {createFiles.length > 0 && (
+                <div className="hub-modal-file-list">
+                  {createFiles.map((file, idx) => (
+                    <div key={`${file.name}-${idx}`} className="hub-modal-file-chip">
+                      <span className="hub-chip-name">{file.name}</span>
+                      <span className="hub-chip-size">({Math.round(file.size / 1024)} KB)</span>
+                      <button
+                        type="button"
+                        className="hub-chip-remove"
+                        aria-label={`Remove ${file.name}`}
+                        onClick={() => setCreateFiles((curr) => curr.filter((_, i) => i !== idx))}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
             <div className="hub-modal-actions">
-              <button type="button" className="hub-btn-ghost" onClick={() => setCreateOpen(false)}>
+              <button
+                type="button"
+                className="hub-btn-ghost"
+                onClick={() => {
+                  setCreateOpen(false);
+                  setCreateFiles([]);
+                }}
+              >
                 Cancel
               </button>
               <button
@@ -357,11 +381,19 @@ export const TemplatesPage = () => {
                 onClick={() => {
                   setCreateOpen(false);
                   navigate("/templates/new", {
-                    state: { name: createName.trim() || "Untitled template" },
+                    state: {
+                      name: createName.trim() || "Untitled template",
+                      files: createFiles,
+                    },
                   });
+                  setCreateFiles([]);
                 }}
               >
-                Continue
+                {createFiles.length > 1
+                  ? `Extract All (${createFiles.length} files simultaneously)`
+                  : createFiles.length === 1
+                    ? "Extract & Continue"
+                    : "Continue"}
               </button>
             </div>
           </div>

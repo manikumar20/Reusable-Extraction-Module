@@ -367,11 +367,7 @@ export const UploadPanel = ({
                 disabled={busy && !batchMode}
                 onClick={() => fileRef.current?.click()}
               >
-                <span aria-hidden="true">
-                  <svg viewBox="0 0 24 24">
-                    <path d="M12 5v14M5 12h14" />
-                  </svg>
-                </span>
+                <span className="app-btn-plus" aria-hidden="true">+</span>
                 Add files
               </button>
             </div>

@@ -46,7 +46,14 @@ export const fieldsFromSuggestions = (
   const ready = docs.filter((document) => document.status === "ready" && document.suggestions);
   const matchedVotes = new Map<
     string,
-    { label: string; type: TemplateField["type"]; hits: number; sampleValue?: string; level: "header" | "line" }
+    {
+      label: string;
+      type: TemplateField["type"];
+      hits: number;
+      sampleValue?: string;
+      level: "header" | "line";
+      description?: string;
+    }
   >();
   const suggestedVotes = new Map<
     string,
@@ -67,9 +74,11 @@ export const fieldsFromSuggestions = (
         hits: 0,
         sampleValue: hit.sampleValue,
         level: headerKeys.has(hit.key) ? "header" : "line",
+        description: catalogField?.description,
       };
       row.hits += 1;
       if (catalogField?.label) row.label = catalogField.label;
+      if (catalogField?.description) row.description = catalogField.description;
       row.level = headerKeys.has(hit.key) ? "header" : "line";
       if (hit.sampleValue) row.sampleValue = hit.sampleValue;
       matchedVotes.set(hit.key, row);
@@ -95,9 +104,8 @@ export const fieldsFromSuggestions = (
     }
   }
 
-  const docCount = Math.max(ready.length, 1);
   const matched = [...matchedVotes.entries()]
-    .filter(([, row]) => row.hits >= Math.ceil(docCount / 2))
+    .filter(([, row]) => row.hits >= 1)
     .map(([key, row]) =>
       newTemplateField({
         id: `matched:${key}`,
@@ -108,10 +116,11 @@ export const fieldsFromSuggestions = (
         sampleValue: row.sampleValue,
         required: false,
         suggested: false,
+        hint: row.description,
       }),
     );
   const suggested = [...suggestedVotes.entries()]
-    .filter(([, row]) => row.hits >= Math.ceil(docCount / 2))
+    .filter(([, row]) => row.hits >= 1)
     .map(([key, row]) =>
       newTemplateField({
         id: key,

@@ -161,7 +161,7 @@ export const DocumentsPage = () => {
         <p className="error-text stand" role="alert">
           {fieldsError}
         </p>
-        <button type="button" className="ingest-secondary" onClick={closeReview}>
+        <button type="button" className="app-btn-ghost" onClick={closeReview}>
           Back to Documents
         </button>
       </section>
@@ -209,8 +209,9 @@ export const DocumentsPage = () => {
               <path d="M3 21v-6h6" />
             </svg>
           </button>
-          <Link className="ingest-browse" to="/">
-            + Extract new file
+          <Link className="docs-create-btn" to="/">
+            <span className="docs-create-icon" aria-hidden="true">+</span>
+            Extract new file
           </Link>
         </div>
       </div>

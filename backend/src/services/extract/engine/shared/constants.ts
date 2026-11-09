@@ -31,7 +31,7 @@ export const TOKEN_PRICES: Readonly<
 };
 
 export const CLAUDE_MAX_RETRIES = 4;
-export const DEFAULT_CLAUDE_CONCURRENCY = 4;
+export const DEFAULT_CLAUDE_CONCURRENCY = 10;
 
 export const LINE_ITEMS_TOOL_NAME = "save_line_items";
 export const HEADER_TOOL_NAME = "save_document_header";
