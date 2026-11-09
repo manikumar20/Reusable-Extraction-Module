@@ -4,6 +4,7 @@ import type { TemplateField } from "./types";
 type FieldListProps = {
   fields: TemplateField[];
   selectedId: string | null;
+  query?: string;
   onSelect: (id: string) => void;
   onReorder: (fields: TemplateField[]) => void;
   onAdd: () => void;
@@ -15,6 +16,7 @@ type FieldListProps = {
 export const FieldList = ({
   fields,
   selectedId,
+  query = "",
   onSelect,
   onReorder,
   onAdd,
@@ -23,123 +25,111 @@ export const FieldList = ({
   onDelete,
 }: FieldListProps) => {
   const dragIndex = useRef(-1);
-  const headerFields = fields.filter((field) => field.level === "header");
-  const lineFields = fields.filter((field) => field.level !== "header");
+  const needle = query.trim().toLowerCase();
+  const visible = needle
+    ? fields.filter((field) => {
+        const hay = field.name.toLowerCase();
+        return hay.includes(needle);
+      })
+    : fields;
 
   const rowClass = (field: TemplateField) => {
-    const parts = ["tm-field-row"];
+    const parts = ["tm-schema-row"];
     if (field.id === selectedId) parts.push("selected");
     if (field.catalogKey && !field.suggested) parts.push("matched");
     else if (field.suggested) parts.push("suggested");
-    else parts.push("custom");
     return parts.join(" ");
-  };
-
-  const renderRow = (field: TemplateField, compact = false) => {
-    const index = fields.indexOf(field);
-    return (
-      <div key={field.id} className={compact ? "tm-field-item compact" : "tm-field-item"}>
-        <div className={rowClass(field)}>
-          <button
-            type="button"
-            draggable
-            className="tm-field-main"
-            onClick={() => onSelect(field.id)}
-            onDragStart={() => {
-              dragIndex.current = index;
-            }}
-            onDragOver={(event) => event.preventDefault()}
-            onDrop={() => {
-              const from = dragIndex.current;
-              if (from < 0 || from === index) return;
-              const next = [...fields];
-              const [moved] = next.splice(from, 1);
-              if (!moved) return;
-              next.splice(index, 0, moved);
-              onReorder(next);
-            }}
-          >
-            <span className="tm-field-name">{field.name || "Untitled field"}</span>
-            {!compact && field.catalogKey && !field.suggested && (
-              <span className="tm-type matched">Matched</span>
-            )}
-            {!compact && field.suggested && <span className="tm-type suggested">Suggested</span>}
-            {!compact && !field.suggested && !field.catalogKey && <span className="tm-type">Custom</span>}
-          </button>
-          <div className="tm-field-actions">
-            {field.suggested && (
-              <button
-                type="button"
-                className="tm-btn tm-btn-primary tm-field-accept"
-                aria-label={`Accept ${field.name || "field"}`}
-                title="Accept"
-                onClick={() => onAccept(field.id)}
-              >
-                ✓
-              </button>
-            )}
-            <button
-              type="button"
-              className="tm-field-x"
-              aria-label={field.suggested ? `Reject ${field.name || "field"}` : `Remove ${field.name || "field"}`}
-              onClick={() => {
-                if (field.suggested) onReject(field.id);
-                else onDelete(field.id);
-              }}
-            >
-              ×
-            </button>
-          </div>
-        </div>
-      </div>
-    );
   };
 
   return (
     <aside className="tm-panel tm-fields">
       <div className="tm-panel-head">
-        <h2>Fields · {fields.length}</h2>
-        <p className="tm-caption">Header &amp; line fields matched from your samples.</p>
+        <div>
+          <h2>Schema Field Builder</h2>
+          <p className="tm-caption">Structured targets mapped to your sample document.</p>
+        </div>
+        <span className="tm-field-count">{fields.length}</span>
       </div>
 
       <div className="tm-field-scroll">
-        {fields.length === 0 ? (
+        {visible.length === 0 ? (
           <div className="tm-empty-card">
-            <strong>No fields yet</strong>
-            <p>Upload a sample on the left, or add a field yourself.</p>
+            <strong>{fields.length === 0 ? "No fields yet" : "No matches"}</strong>
+            <p>
+              {fields.length === 0
+                ? "Upload a sample on the right, or add a custom target field."
+                : "Try a different search term."}
+            </p>
           </div>
         ) : (
-          <>
-            <section className="tm-field-group">
-              <div className="tm-field-group-head">
-                <h3 className="tm-field-group-title">Header</h3>
-                <span className="tm-field-count">{headerFields.length}</span>
-              </div>
-              {headerFields.length === 0 ? (
-                <p className="tm-note tm-line-empty">No header fields yet.</p>
-              ) : (
-                headerFields.map((field) => renderRow(field))
-              )}
-            </section>
+          <div className="tm-schema-list">
+            {visible.map((field) => {
+              const index = fields.indexOf(field);
+              const label = field.name.trim() || "Untitled field";
 
-            <section className="tm-field-group tm-line-group">
-              <div className="tm-field-group-head">
-                <h3 className="tm-field-group-title">Line items</h3>
-                <span className="tm-field-count">{lineFields.length}</span>
-              </div>
-              {lineFields.length === 0 ? (
-                <p className="tm-note tm-line-empty">No line fields yet.</p>
-              ) : (
-                <div className="tm-line-rail">{lineFields.map((field) => renderRow(field, true))}</div>
-              )}
-            </section>
-          </>
+              return (
+                <div key={field.id} className="tm-schema-item">
+                  <div className={rowClass(field)}>
+                    <button
+                      type="button"
+                      draggable
+                      className="tm-schema-main"
+                      onClick={() => onSelect(field.id)}
+                      onDragStart={() => {
+                        dragIndex.current = index;
+                      }}
+                      onDragOver={(event) => event.preventDefault()}
+                      onDrop={() => {
+                        const from = dragIndex.current;
+                        if (from < 0 || from === index) return;
+                        const next = [...fields];
+                        const [moved] = next.splice(from, 1);
+                        if (!moved) return;
+                        next.splice(index, 0, moved);
+                        onReorder(next);
+                      }}
+                    >
+                      <span className="tm-schema-name">{label}</span>
+                    </button>
+                    <div className="tm-field-actions">
+                      {field.suggested && (
+                        <button
+                          type="button"
+                          className="tm-confirm"
+                          aria-label={`Confirm ${label}`}
+                          title="Confirm"
+                          onClick={() => onAccept(field.id)}
+                        >
+                          Confirm
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="tm-field-x"
+                        aria-label={
+                          field.suggested
+                            ? `Reject ${field.name || "field"}`
+                            : `Remove ${field.name || "field"}`
+                        }
+                        onClick={() => {
+                          if (field.suggested) onReject(field.id);
+                          else onDelete(field.id);
+                        }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         )}
       </div>
 
       <div className="tm-field-tools">
-        <button type="button" className="tm-btn tm-add" onClick={onAdd}>
-          + Add field
+        <button type="button" className="tm-add-dashed" onClick={onAdd}>
+          + Add Custom Target Field
         </button>
       </div>
     </aside>

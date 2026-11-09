@@ -49,8 +49,6 @@ export type TemplateSummary = Template & {
   active: boolean;
 };
 
-const ACTIVE_TEMPLATE_KEY = "active_template_id";
-
 const fieldKey = (field: TemplateField) =>
   field.catalogKey?.trim() ||
   field.name
@@ -74,11 +72,10 @@ export const toJobTemplate = (template: Template) => ({
 });
 
 export const getActiveTemplateId = async (): Promise<string | null> => {
-  const { rows } = await getPool().query<{ value: string }>(
-    `SELECT value FROM app_settings WHERE key = $1`,
-    [ACTIVE_TEMPLATE_KEY],
+  const { rows } = await getPool().query<{ template_id: string }>(
+    `SELECT template_id FROM template_versions WHERE is_active LIMIT 1`,
   );
-  return rows[0]?.value ?? null;
+  return rows[0]?.template_id ?? null;
 };
 
 export const getActiveTemplate = async (): Promise<Template | null> => {
@@ -87,21 +84,37 @@ export const getActiveTemplate = async (): Promise<Template | null> => {
 };
 
 export const setActiveTemplate = async (templateId: string | null): Promise<Template | null> => {
-  if (!templateId) {
-    await getPool().query(`DELETE FROM app_settings WHERE key = $1`, [ACTIVE_TEMPLATE_KEY]);
-    return null;
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(`UPDATE template_versions SET is_active = FALSE WHERE is_active`);
+    if (templateId) {
+      const updated = await client.query(
+        `
+          UPDATE template_versions
+          SET is_active = TRUE, updated_at = NOW()
+          WHERE id = (
+            SELECT id FROM template_versions
+            WHERE template_id = $1
+            ORDER BY version DESC
+            LIMIT 1
+          )
+        `,
+        [templateId],
+      );
+      if (!updated.rowCount) {
+        await client.query("ROLLBACK");
+        return null;
+      }
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
   }
-  const template = await getTemplate(templateId);
-  if (!template) return null;
-  await getPool().query(
-    `
-      INSERT INTO app_settings (key, value, updated_at)
-      VALUES ($1, $2, NOW())
-      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
-    `,
-    [ACTIVE_TEMPLATE_KEY, templateId],
-  );
-  return template;
+  return templateId ? getTemplate(templateId) : null;
 };
 
 type VersionRow = {
@@ -358,13 +371,23 @@ export const saveTemplateVersion = async (
     }
     const nextVersion = Math.max(...existing.rows.map((row) => row.version)) + 1;
     const createdAt = existing.rows[0]?.created_at;
+    const active = await client.query(
+      `SELECT 1 FROM template_versions WHERE template_id = $1 AND is_active LIMIT 1`,
+      [templateId],
+    );
+    if (active.rows.length) {
+      await client.query(
+        `UPDATE template_versions SET is_active = FALSE WHERE template_id = $1 AND is_active`,
+        [templateId],
+      );
+    }
     const versionId = randomUUID();
     await client.query(
       `
-        INSERT INTO template_versions (id, template_id, name, version, category, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, NOW())
+        INSERT INTO template_versions (id, template_id, name, version, category, is_active, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
       `,
-      [versionId, templateId, input.name, nextVersion, input.category, createdAt],
+      [versionId, templateId, input.name, nextVersion, input.category, active.rows.length > 0, createdAt],
     );
     await insertFields(versionId, input.fields, (text, values) => client.query(text, values));
     await client.query("COMMIT");
@@ -482,13 +505,11 @@ export const replaceTemplateDocuments = async (
 
 export const deleteTemplate = async (templateId: string): Promise<boolean> => {
   const docs = await listTemplateDocuments(templateId);
-  const activeId = await getActiveTemplateId();
   const { rowCount } = await getPool().query(
     "DELETE FROM template_versions WHERE template_id = $1",
     [templateId],
   );
   await getPool().query("DELETE FROM template_documents WHERE template_id = $1", [templateId]);
-  if (activeId === templateId) await setActiveTemplate(null);
   await unlinkStored(docs.map((doc) => doc.storedName));
   return (rowCount ?? 0) > 0;
 };

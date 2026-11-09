@@ -48,7 +48,7 @@ export const lineUserText = (input: {
     `${identityKey}: the printed item/line/position number only. Keep every dot and leading zero. If the title starts with that number, put the number in ${identityKey} and the rest in the description field. Never use the document, PR, event, or file number. Do not invent a number. A digit inside a product code is not an item number.`,
     "For manufacturer list fields: one object per manufacturer option on this buy line. Company name only — not vendor id, city, country, or street. Do not invent a maker or part number. Never emit a manufacturer as its own line.",
     "For quantity and unit fields: keep the number and the unit code in separate properties. Convert printed unit words to short codes (Pieces, EA, Nos → PCS).",
-    "For currency fields: a 3-letter ISO code. Convert a printed name yourself (US Dollar → USD). If the file has one header currency, put that ISO code on every buy line unless a line shows a different currency.",
+    "For currency fields: a 3-letter ISO code. Convert a printed name yourself (US Dollar → USD). Leave a line currency empty when it is the same as the document currency. Set it only when that buy line prints a different currency.",
     "Never copy a value from another line or guess.",
     "Keep every buy line that has a description, manufacturer, or part number.",
     "Never output placeholders such as UNKNOWN, N/A, None, or null.",

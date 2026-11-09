@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { Request, Response } from "express";
-import { apiKey } from "../../config/runtime.js";
+import { hasClaudeCredentials } from "../../services/extract/anthropicClient.js";
 import { uploadDir } from "../../middleware/documentUpload.js";
 import { suggestTemplateFields } from "../../services/templates/fieldSuggestion.js";
 import { testTemplateOnSamples } from "../../services/templates/sampleRun.js";
@@ -55,7 +55,7 @@ export const handleSuggestTemplateFields = async (request: Request, response: Re
     throw AppError(HTTP_STATUS.BAD_REQUEST, "Choose a sample document.", { code: "FILE_REQUIRED" });
   }
   try {
-    if (!apiKey()) {
+    if (!hasClaudeCredentials()) {
       throw AppError(HTTP_STATUS.SERVICE_UNAVAILABLE, "AI API key is not configured.", {
         code: "CLAUDE_NOT_CONFIGURED",
       });
@@ -132,7 +132,7 @@ export const handleTestTemplate = async (request: Request, response: Response) =
         code: "FILE_REQUIRED",
       });
     }
-    if (!apiKey()) {
+    if (!hasClaudeCredentials()) {
       throw AppError(HTTP_STATUS.SERVICE_UNAVAILABLE, "AI API key is not configured.", {
         code: "CLAUDE_NOT_CONFIGURED",
       });

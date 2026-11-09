@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { FALLBACK_ACCEPT } from "../format";
 import type { SourceDocument } from "./matching";
 import { SampleViewer } from "./SampleViewer";
 import type { SampleBox, TemplateField } from "./types";
@@ -12,6 +13,12 @@ type DocumentStageProps = {
   onSelect: (id: string) => void;
   onRemove: (id: string) => void;
   onMap: (box: SampleBox) => void;
+};
+
+const fileSize = (bytes: number) => {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 };
 
 const previewable = (file: File) => {
@@ -34,6 +41,7 @@ const FileInput = ({
       type="file"
       multiple
       hidden
+      accept={FALLBACK_ACCEPT.join(",")}
       onChange={(event) => {
         const files = [...(event.target.files ?? [])];
         event.target.value = "";
@@ -66,11 +74,13 @@ export const DocumentStage = ({
     <section className="tm-panel tm-canvas">
       <div className="tm-canvas-head">
         <div>
-          <h2>Documents · {documents.length}</h2>
+          <h2>Document Anchor Mapper</h2>
           <p className="tm-caption">
             {reading
               ? `Suggesting catalogue fields from ${reading} file${reading === 1 ? "" : "s"}…`
-              : "Upload PDF, Word, Excel, text, or image files. Add several at once or one by one."}
+              : documents.length
+                ? "Draw translucent boxes on the sample to anchor selected schema fields."
+                : "Upload a sample (PDF, Word, Excel, text, or image). Suggestions run for every type; draw boxes on PDF or images."}
           </p>
         </div>
         {documents.length > 0 && (
@@ -99,12 +109,13 @@ export const DocumentStage = ({
           <span className="tm-drop-mark" aria-hidden="true">
             ↑
           </span>
-          <strong>Upload documents to extract fields</strong>
-          <span>Drop files here, or click to choose. Multiple files are allowed.</span>
+          <strong>Drop a sample document</strong>
+          <span>PDF, Word, Excel, text, or image · field suggestions for all · draw boxes on PDF/image</span>
           <input
             type="file"
             multiple
             hidden
+            accept={FALLBACK_ACCEPT.join(",")}
             onChange={(event) => {
               take(event.target.files);
               event.target.value = "";
@@ -121,7 +132,13 @@ export const DocumentStage = ({
                   className={document.id === active?.id ? "tm-file active" : "tm-file"}
                   onClick={() => onSelect(document.id)}
                 >
-                  <span className="tm-file-name">{document.file.name}</span>
+                  <span className="tm-file-mark" aria-hidden="true">
+                    {document.file.name.split(".").pop()?.slice(0, 3).toUpperCase() || "FILE"}
+                  </span>
+                  <span className="tm-file-copy">
+                    <span className="tm-file-name">{document.file.name}</span>
+                    <span className="tm-file-kind">{fileSize(document.file.size)} · sample</span>
+                  </span>
                   <span className={`tm-file-state ${document.status}`}>
                     {document.status === "reading"
                       ? "Reading"

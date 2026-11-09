@@ -8,16 +8,24 @@ import {
   type CatalogField,
   type FieldDataType,
 } from "../extract/engine/shared/fields.js";
-import { CLAUDE_MAX_RETRIES, withClaudeSlot } from "../extract/engine/shared/limiter.js";
-import { EXTRACTION_MODEL } from "../extract/engine/shared/constants.js";
+import { withClaudeSlot } from "../extract/engine/shared/limiter.js";
+import {
+  EXTRACTION_MODEL,
+  HEADER_MAX_TOKENS,
+  HEADER_MODEL,
+  HEADER_TIMEOUT_MS,
+  LINE_TIMEOUT_MS,
+} from "../extract/engine/shared/constants.js";
 import {
   emptyTokenUsage,
   tokenCostUsd,
   type ExtractionTokenUsage,
 } from "../extract/engine/shared/tokens.js";
-import { apiKey } from "../../config/runtime.js";
-import { HttpError } from "../../utils/httpError.js";
-import { readSampleDocument } from "./sampleDocument.js";
+import { AppError, HTTP_STATUS } from "../../utils/errors/index.js";
+import { createAnthropicClient, hasClaudeCredentials } from "../extract/anthropicClient.js";
+import { mapClaudeError } from "../extract/claudeErrors.js";
+import { documentModel, recordModel } from "../../config/runtime.js";
+import { readSampleDocument, type SampleDocument } from "./sampleDocument.js";
 
 const MAX_SUGGESTIONS = 10;
 /** Majority vote runs. Default 1 for speed; set FIELD_SUGGESTION_RUNS=3 for stricter voting. */
@@ -26,8 +34,9 @@ const SUGGESTION_RUNS = Math.max(
   Math.min(5, Number(process.env.FIELD_SUGGESTION_RUNS) || 1),
 );
 const TOOL_NAME = "save_field_suggestions";
-const CLAUDE_TIMEOUT_MS = 120_000;
-const MAX_OUTPUT_TOKENS = 3_000;
+const MAX_OUTPUT_TOKENS = HEADER_MAX_TOKENS;
+const MAX_MATCHED = 24;
+const SUGGESTION_RETRIES = 1;
 const SAMPLE_VALUE_MAX_CHARS = 200;
 const KEY_SLUG_MAX_CHARS = 50;
 const CUSTOM_FIELD_PREFIX = "x_";
@@ -83,25 +92,34 @@ const slug = (value: string) =>
 const text = (value: unknown) =>
   typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
 
+const isPdfName = (name: string) => name.toLowerCase().endsWith(".pdf");
+
 const detectTemplateFields = async (
-  filePath: string,
   originalName: string,
+  sample: SampleDocument,
 ): Promise<FieldSuggestions> => {
-  if (!apiKey()) {
-    throw new HttpError(503, "AI API key is not configured.", "CLAUDE_NOT_CONFIGURED");
-  }
-  const sample = await readSampleDocument(filePath, originalName);
-  if (!sample) {
-    throw new HttpError(400, "No readable text was found in this document.", "DOCUMENT_UNREADABLE");
+  if (!hasClaudeCredentials()) {
+    throw AppError(HTTP_STATUS.SERVICE_UNAVAILABLE, "AI API key is not configured.", {
+      code: "CLAUDE_NOT_CONFIGURED",
+    });
   }
 
-  const catalog = LINE_FIELDS;
+  // Header + line catalogue (dedupe shared keys such as payment_terms).
+  const catalog: CatalogField[] = [];
+  const catalogKeys = new Set<string>();
+  for (const entry of [...HEADER_FIELDS, ...LINE_FIELDS]) {
+    if (catalogKeys.has(entry.key)) continue;
+    catalogKeys.add(entry.key);
+    catalog.push(entry);
+  }
+  const headerKeySet = new Set(HEADER_FIELDS.map((entry) => entry.key));
   // Key + label only — full descriptions bloat the prompt (~10k+ tokens) and slow every run.
   const catalogText = catalog
-    .map(
-      (entry) =>
-        `- ${entry.key} (${entry.label})${entry.isDefault ? " [always included]" : ""}`,
-    )
+    .map((entry) => {
+      const scope = headerKeySet.has(entry.key) ? "header" : "line";
+      const mark = entry.isDefault ? " [always included]" : "";
+      return `- ${entry.key} (${entry.label}) [${scope}]${mark}`;
+    })
     .join("\n");
 
   const tool: Anthropic.Tool = {
@@ -120,7 +138,10 @@ const detectTemplateFields = async (
             type: "object",
             additionalProperties: false,
             properties: {
-              key: { type: "string", enum: catalog.map((entry) => entry.key) },
+              key: {
+                type: "string",
+                description: "Exact catalogue key from the list (e.g. document_number, line_no).",
+              },
               printedLabel: { type: "string", description: "The column or label as printed." },
               sampleValue: {
                 type: "string",
@@ -132,14 +153,14 @@ const detectTemplateFields = async (
         },
         suggested: {
           type: "array",
-          description: `Labeled fields the catalogue does not cover (forms, invoices, medical records, RFQs, etc.). At most ${MAX_SUGGESTIONS}. Prefer suggesting real printed labels over returning an empty list.`,
+          description: `Labeled fields the catalogue does not cover. At most ${MAX_SUGGESTIONS}.`,
           items: {
             type: "object",
             additionalProperties: false,
             properties: {
               label: {
                 type: "string",
-                description: "Short field name, e.g. Patient Name or Valve Body Rating.",
+                description: "Short field name, e.g. Patient Name.",
               },
               printedLabel: {
                 type: "string",
@@ -148,43 +169,21 @@ const detectTemplateFields = async (
               printedOn: {
                 type: "string",
                 enum: [PRINTED_ON.EACH_LINE, PRINTED_ON.ONCE_PER_DOCUMENT],
-                description:
-                  "EACH_LINE for repeating table/row values. ONCE_PER_DOCUMENT for form fields shown once on the page.",
               },
               dataType: {
                 type: "string",
                 enum: [...CUSTOM_FIELD_DATA_TYPES],
-                description: "TEXT, NUMBER, DATE, LIST or KEY_VALUE.",
               },
               description: {
                 type: "string",
-                description:
-                  "An instruction for an extractor reading this document type, in one or two sentences.",
-              },
-              customerInternal: {
-                type: "boolean",
-                description: "True when the value should stay internal / not be shared externally.",
-              },
-              matchRole: {
-                type: "string",
-                enum: [...CUSTOM_ROLES],
-                description: "CATEGORY, MAKER, PARENT_OEM, DESCRIPTIVE, or NONE.",
+                description: "Optional one-sentence extractor hint.",
               },
               sampleValue: {
                 type: "string",
                 description: "One value from the document, copied as printed.",
               },
             },
-            required: [
-              "label",
-              "printedLabel",
-              "printedOn",
-              "dataType",
-              "description",
-              "customerInternal",
-              "matchRole",
-              "sampleValue",
-            ],
+            required: ["label", "printedLabel", "printedOn", "dataType", "sampleValue"],
           },
         },
       },
@@ -192,11 +191,13 @@ const detectTemplateFields = async (
     },
   };
 
-  const model = process.env.FIELD_SUGGESTION_MODEL?.trim() || EXTRACTION_MODEL;
-  const client = new Anthropic({
-    apiKey: apiKey(),
-    timeout: CLAUDE_TIMEOUT_MS,
-    maxRetries: CLAUDE_MAX_RETRIES,
+  // Text samples: fast Haiku (same as extract header). Vision/scans: Sonnet for reliable OCR.
+  const model =
+    process.env.FIELD_SUGGESTION_MODEL?.trim() ||
+    (sample.vision ? recordModel() || EXTRACTION_MODEL : documentModel() || HEADER_MODEL);
+  const client = createAnthropicClient({
+    timeout: sample.vision ? LINE_TIMEOUT_MS : HEADER_TIMEOUT_MS,
+    maxRetries: SUGGESTION_RETRIES,
   });
   const ask = () =>
     withClaudeSlot(() =>
@@ -214,17 +215,14 @@ const detectTemplateFields = async (
                 type: "text",
                 text: [
                   sample.vision
-                    ? `This attachment is a PDF scan or image ("${originalName}"). Read every visible form label, table column, and value with vision. We are building an extraction template from this sample.`
-                    : `This is a sample document ("${originalName}"). We are building an extraction template from the labels and values it shows (RFQ, invoice, medical form, spreadsheet, etc.).`,
-                  "Our field catalogue (prefer these keys when a printed label means the same thing):",
+                    ? `PDF/image sample "${originalName}". Read every visible form label, table column heading, and filled value with vision. Build an extraction template.`
+                    : `Sample "${originalName}". Build an extraction template from printed labels and values.`,
+                  "Catalogue keys (use exact key in matched):",
                   catalogText,
                   `Call ${TOOL_NAME} once.`,
-                  "matched: every catalogue key that this document clearly shows. Map printed labels to catalogue keys when they mean the same thing. Skip keys the document does not show. Do not invent matches.",
-                  "suggested: every other clearly labeled field that is NOT already covered by a matched catalogue key. Include form fields printed once (patient name, invoice number, diagnosis, dates, amounts, etc.) and repeating table columns. Use ONCE_PER_DOCUMENT for form fields shown once; EACH_LINE for repeating rows. Never suggest a rename of a catalogue field you already matched. Do not invent labels that are not printed.",
-                  "If the document is not a procurement RFQ, matched may be empty — still fill suggested with the important printed labels (up to the limit). An empty suggested list is wrong when the page shows labeled values.",
-                  sample.vision
-                    ? "Copy sampleValue exactly as printed. Prefer the first filled example for each label."
-                    : "Copy sampleValue from the document text exactly as printed.",
+                  `matched: up to ${MAX_MATCHED} catalogue keys this document clearly shows (header + line). Prefer the most important labels. Map RFQ No → document_number. Skip missing keys. Keep sampleValue short.`,
+                  `suggested: up to ${MAX_SUGGESTIONS} other printed labels not in the catalogue. ONCE_PER_DOCUMENT for form fields; EACH_LINE for table columns. If this is not an RFQ, still suggest the important printed labels (patient name, invoice total, etc.).`,
+                  "Copy sampleValue briefly as printed. An empty matched+suggested response is wrong when labels are visible.",
                 ].join("\n"),
               },
             ],
@@ -238,7 +236,7 @@ const detectTemplateFields = async (
     result.status === "fulfilled" ? [result.value] : [],
   );
   if (!responses.length) {
-    throw (settled[0] as PromiseRejectedResult).reason;
+    throw mapClaudeError((settled[0] as PromiseRejectedResult).reason);
   }
   const usage: ExtractionTokenUsage = { ...emptyTokenUsage(), model };
   responses.forEach((response) => {
@@ -261,15 +259,26 @@ const detectTemplateFields = async (
   });
 
   const byKey = new Map(catalog.map((entry) => [entry.key, entry]));
+  const resolveCatalogKey = (raw: string, printedLabel = "") => {
+    const key = text(raw);
+    if (byKey.has(key)) return key;
+    const candidates = [key, printedLabel].map(normalLabel).filter(Boolean);
+    for (const entry of catalog) {
+      const aliases = [normalLabel(entry.key), normalLabel(entry.label)];
+      if (candidates.some((candidate) => aliases.includes(candidate))) return entry.key;
+    }
+    return "";
+  };
   const firstSeen = new Map<string, Record<string, unknown>>();
   const votes = new Map<string, number>();
   runs.forEach((run) => {
-    new Set(run.matched.map((row) => text(row.key))).forEach((key) => {
-      if (!byKey.has(key)) return;
+    const seen = new Set<string>();
+    run.matched.forEach((row) => {
+      const key = resolveCatalogKey(text(row.key), text(row.printedLabel));
+      if (!key || seen.has(key)) return;
+      seen.add(key);
       votes.set(key, (votes.get(key) ?? 0) + 1);
-      if (!firstSeen.has(key)) {
-        firstSeen.set(key, run.matched.find((row) => text(row.key) === key) ?? {});
-      }
+      if (!firstSeen.has(key)) firstSeen.set(key, row);
     });
   });
   const matched: MatchedFieldSuggestion[] = catalog
@@ -283,7 +292,8 @@ const detectTemplateFields = async (
         sampleValue: text(row.sampleValue).slice(0, SAMPLE_VALUE_MAX_CHARS),
         isDefault: Boolean(entry.isDefault),
       };
-    });
+    })
+    .slice(0, MAX_MATCHED);
 
   const docText = normalLabel(sample.text);
   const vision = sample.vision;
@@ -315,8 +325,14 @@ const detectTemplateFields = async (
       if (!printed || (labelUses.get(printed) ?? 0) > 1) return false;
       if (matchedColumns.has(printed)) return false;
       if (!normalLabel(text(row.sampleValue)).replace(/^na$/, "")) return false;
-      // Text layer check only when we have extracted text (skip for vision / weak OCR).
-      if (!vision && docText && printed.length >= 3 && !docText.includes(printed)) return false;
+      // Soft text-layer check: allow near matches (spacing / punctuation differ).
+      if (!vision && docText && printed.length >= 4) {
+        const compactDoc = docText.replace(/[^a-z0-9]/g, "");
+        const compactPrinted = printed.replace(/[^a-z0-9]/g, "");
+        if (compactPrinted && !compactDoc.includes(compactPrinted) && !docText.includes(printed)) {
+          return false;
+        }
+      }
       return true;
     });
   };
@@ -334,10 +350,7 @@ const detectTemplateFields = async (
     .map((vote) => vote.row);
 
   const taken = new Set(
-    [...catalog, ...HEADER_FIELDS].flatMap((entry: CatalogField) => [
-      normalLabel(entry.label),
-      normalLabel(entry.key),
-    ]),
+    catalog.flatMap((entry: CatalogField) => [normalLabel(entry.label), normalLabel(entry.key)]),
   );
   matched.forEach((entry) => {
     taken.add(normalLabel(entry.label));
@@ -372,7 +385,7 @@ const detectTemplateFields = async (
       label,
       dataType,
       description: text(row.description).slice(0, 500),
-      matchRole,
+      matchRole: matchRole || "NONE",
       sampleValue: text(row.sampleValue).slice(0, SAMPLE_VALUE_MAX_CHARS),
       showToSupplier: row.customerInternal !== true,
     });
@@ -390,13 +403,28 @@ const detectTemplateFields = async (
 };
 
 const CACHE_LIMIT = 200;
-const CACHE_VERSION = "v3-general-forms";
+const CACHE_VERSION = "v8-any-pdf-vision";
 const resultsByFile = new Map<string, FieldSuggestions>();
+
+const mergeUsage = (
+  left: FieldSuggestions["usage"],
+  right: FieldSuggestions["usage"],
+): FieldSuggestions["usage"] => ({
+  inputTokens: left.inputTokens + right.inputTokens,
+  outputTokens: left.outputTokens + right.outputTokens,
+  model: right.model || left.model,
+  costUsd: left.costUsd + right.costUsd,
+});
 
 export const suggestTemplateFields = async (
   filePath: string,
   originalName: string,
 ): Promise<FieldSuggestions> => {
+  if (!hasClaudeCredentials()) {
+    throw AppError(HTTP_STATUS.SERVICE_UNAVAILABLE, "AI API key is not configured.", {
+      code: "CLAUDE_NOT_CONFIGURED",
+    });
+  }
   const fileHash =
     CACHE_VERSION +
     ":" +
@@ -410,7 +438,35 @@ export const suggestTemplateFields = async (
       usage: { inputTokens: 0, outputTokens: 0, model: cached.usage.model, costUsd: 0 },
     };
   }
-  const result = await detectTemplateFields(filePath, originalName);
+
+  const sample = await readSampleDocument(filePath, originalName);
+  if (!sample) {
+    throw AppError(HTTP_STATUS.BAD_REQUEST, "No readable content was found in this document.", {
+      code: "DOCUMENT_UNREADABLE",
+    });
+  }
+
+  let result = await detectTemplateFields(originalName, sample);
+
+  // Text-layer PDF returned nothing — retry with page vision (scans / weak OCR).
+  if (
+    isPdfName(originalName) &&
+    !sample.vision &&
+    !result.matched.length &&
+    !result.suggested.length
+  ) {
+    const visionSample = await readSampleDocument(filePath, originalName, { forceVision: true });
+    if (visionSample?.vision) {
+      console.info(`Template suggest retrying "${originalName}" with PDF vision.`);
+      const retry = await detectTemplateFields(originalName, visionSample);
+      result = {
+        matched: retry.matched,
+        suggested: retry.suggested,
+        usage: mergeUsage(result.usage, retry.usage),
+      };
+    }
+  }
+
   // Do not cache total misses — retry should be able to recover after prompt/filter fixes.
   if (result.matched.length || result.suggested.length) {
     resultsByFile.set(fileHash, result);

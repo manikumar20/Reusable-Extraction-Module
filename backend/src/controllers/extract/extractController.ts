@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { Request, Response } from "express";
-import { apiKey, documentModel, recordModel } from "../../config/runtime.js";
+import { documentModel, recordModel } from "../../config/runtime.js";
+import { hasClaudeCredentials } from "../../services/extract/anthropicClient.js";
 import { insertDocument } from "../../db/documents/documentDb.js";
 import { getActiveTemplate, toJobTemplate } from "../../db/templates/templateDb.js";
 import { HEADER_FIELDS, LINE_FIELDS } from "../../services/extract/engine/shared/fields.js";
@@ -62,7 +63,7 @@ const readExtractTemplate = (body: unknown): JobTemplate | null => {
 
 export const handleGetExtractConfig = async (_request: Request, response: Response) => {
   response.json({
-    ready: Boolean(apiKey()),
+    ready: hasClaudeCredentials(),
     recordModel: recordModel(),
     documentModel: documentModel(),
     accept: ALLOWED_EXTENSIONS,
@@ -88,7 +89,7 @@ export const handleCreateExtract = async (request: Request, response: Response) 
       code: "IMAGE_TOO_LARGE",
     });
   }
-  if (!apiKey()) {
+  if (!hasClaudeCredentials()) {
     throw AppError(HTTP_STATUS.SERVICE_UNAVAILABLE, "AI API key is not configured.", {
       code: "CLAUDE_NOT_CONFIGURED",
     });
@@ -109,7 +110,7 @@ export const handleCreateExtract = async (request: Request, response: Response) 
     documentType: resolveDocumentType(requestedType, fileName),
   });
 
-  const job = createJob(fileName, template);
+  const job = createJob(fileName, template, document.id);
   void runJob(job.id, file.path, fileName);
   response.status(HTTP_STATUS.ACCEPTED).json({ id: job.id, document });
 };

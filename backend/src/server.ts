@@ -1,9 +1,9 @@
 import fs from "node:fs/promises";
-import { ensureDatabase } from "../config/initDb.js";
+import { applySchema, ensureDatabase } from "../config/initDb.js";
+import { runMigrations } from "../config/migrate.js";
 import { createApp } from "./app.js";
 import { env } from "./config/env.js";
 import { checkDatabaseConnection, closeDatabase } from "./db/_shared/client.js";
-import { runMigrations } from "../config/migrate.js";
 import { uploadDir } from "./middleware/documentUpload.js";
 
 const startServer = async () => {
@@ -15,8 +15,12 @@ const startServer = async () => {
     );
     process.exit(1);
   }
+  await applySchema();
   await runMigrations();
   await fs.mkdir(uploadDir, { recursive: true });
+
+  const { ensureDefaultTemplate } = await import("./services/templates/ensureDefaultTemplate.js");
+  await ensureDefaultTemplate();
 
   const app = createApp();
   const server = app.listen(env.port, () => {

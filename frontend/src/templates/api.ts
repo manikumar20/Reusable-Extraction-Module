@@ -75,6 +75,11 @@ export const activateTemplate = async (id: string) => {
   return (await response.json()) as Template;
 };
 
+export const clearActiveTemplate = async () => {
+  const response = await fetch(apiUrl("/templates/active"), { method: "DELETE" });
+  if (!response.ok) throw new Error(await errorMessage(response, "Active template could not be cleared."));
+};
+
 export type StoredTemplateDocument = {
   id: string;
   fileName: string;

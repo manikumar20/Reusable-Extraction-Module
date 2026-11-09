@@ -54,6 +54,22 @@ export type StoredDocument = {
   documentType: string;
   mimeType: string;
   uploadedAt: string;
+  status?: string;
+  sources?: string[];
+  totalFields?: number;
+  fields?: { fieldName: string; fieldValue: string }[];
+};
+
+export type ExtractedFieldRow = {
+  id: string;
+  documentId: number;
+  fieldName: string;
+  fieldKey: string;
+  fieldValue: string;
+  dataType: string;
+  source: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export const DOCUMENT_TYPES = [

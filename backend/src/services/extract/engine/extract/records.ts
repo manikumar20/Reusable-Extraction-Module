@@ -298,7 +298,8 @@ export const extractLineItemsWithClaude = async (input: {
   }
 
   const client = new Anthropic({
-    apiKey: input.apiKey,
+    apiKey: input.apiKey || null,
+    authToken: process.env.ANTHROPIC_AUTH_TOKEN?.trim() || undefined,
     timeout: LINE_TIMEOUT_MS,
     maxRetries: CLAUDE_MAX_RETRIES,
   });

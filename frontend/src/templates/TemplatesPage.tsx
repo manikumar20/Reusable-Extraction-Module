@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { activateTemplate, deleteTemplate, listTemplates } from "./api";
+import {
+  activateTemplate,
+  clearActiveTemplate,
+  deleteTemplate,
+  listTemplates,
+} from "./api";
 import "./templates.css";
 import {
   clearRememberedTemplate,
@@ -8,7 +13,38 @@ import {
   type TemplateSummary,
 } from "./types";
 
-const PAGE_SIZE = 20;
+const HUB_FILTERS = ["All", "Finance", "Healthcare", "HR & Legal"] as const;
+
+const categoryMatches = (template: TemplateSummary, filter: string) => {
+  if (filter === "All") return true;
+  if (filter === "Finance") return template.category === "Finance";
+  if (filter === "HR & Legal") return template.category === "HR" || template.category === "Legal";
+  if (filter === "Healthcare") return template.category === "Identity";
+  return template.category === filter;
+};
+
+const categorySubtitle = (category: string) => {
+  if (category === "Finance") return "Finance & Accounts Payable";
+  if (category === "HR") return "HR & People Ops";
+  if (category === "Legal") return "Legal & Contracts";
+  if (category === "Identity") return "Healthcare & Labs";
+  return category;
+};
+
+const isDefaultTemplate = (name: string) =>
+  name === "Default Line Fields" || name === "Default template";
+
+const updatedOn = (value: string) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+};
+
+const fieldMix = (template: TemplateSummary) => {
+  const line = template.fields.filter((field) => field.level === "line").length;
+  const header = template.fields.length - line;
+  return { header, line };
+};
 
 export const TemplatesPage = () => {
   const navigate = useNavigate();
@@ -17,7 +53,11 @@ export const TemplatesPage = () => {
   const [loading, setLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [activatingId, setActivatingId] = useState<string | null>(null);
-  const [page, setPage] = useState(1);
+  const [deactivating, setDeactivating] = useState(false);
+  const [query, setQuery] = useState("");
+  const [category, setCategory] = useState<(typeof HUB_FILTERS)[number]>("All");
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createName, setCreateName] = useState("Untitled template");
 
   useEffect(() => {
     document.title = "Templates · ExtractIQ";
@@ -31,7 +71,6 @@ export const TemplatesPage = () => {
         if (cancelled) return;
         setTemplates(rows);
         setError("");
-        setPage(1);
       })
       .catch((reason: unknown) => {
         if (!cancelled) setError(reason instanceof Error ? reason.message : "Templates could not be loaded.");
@@ -44,12 +83,23 @@ export const TemplatesPage = () => {
     };
   }, []);
 
-  const pageCount = Math.max(1, Math.ceil(templates.length / PAGE_SIZE));
-  const currentPage = Math.min(page, pageCount);
-  const visible = useMemo(() => {
-    const start = (currentPage - 1) * PAGE_SIZE;
-    return templates.slice(start, start + PAGE_SIZE);
-  }, [templates, currentPage]);
+  const active = useMemo(
+    () => templates.find((template) => template.active) ?? null,
+    [templates],
+  );
+
+  const filtered = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return templates.filter((template) => {
+      if (active && template.id === active.id) return false;
+      if (!categoryMatches(template, category)) return false;
+      if (!needle) return true;
+      return (
+        template.name.toLowerCase().includes(needle) ||
+        template.category.toLowerCase().includes(needle)
+      );
+    });
+  }, [templates, active, category, query]);
 
   const onDelete = async (template: TemplateSummary) => {
     if (!window.confirm(`Delete template “${template.name}”? This cannot be undone.`)) return;
@@ -58,12 +108,7 @@ export const TemplatesPage = () => {
     try {
       await deleteTemplate(template.id);
       if (template.active) clearRememberedTemplate();
-      setTemplates((current) => {
-        const next = current.filter((row) => row.id !== template.id);
-        const nextPages = Math.max(1, Math.ceil(next.length / PAGE_SIZE));
-        setPage((value) => Math.min(value, nextPages));
-        return next;
-      });
+      setTemplates((current) => current.filter((row) => row.id !== template.id));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Template could not be deleted.");
     } finally {
@@ -75,11 +120,9 @@ export const TemplatesPage = () => {
     setActivatingId(template.id);
     setError("");
     try {
-      const active = await activateTemplate(template.id);
-      rememberTemplate(active);
-      setTemplates((current) =>
-        current.map((row) => ({ ...row, active: row.id === active.id })),
-      );
+      const next = await activateTemplate(template.id);
+      rememberTemplate(next);
+      setTemplates((current) => current.map((row) => ({ ...row, active: row.id === next.id })));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Template could not be set as active.");
     } finally {
@@ -87,141 +130,243 @@ export const TemplatesPage = () => {
     }
   };
 
+  const onDeactivate = async () => {
+    setDeactivating(true);
+    setError("");
+    try {
+      await clearActiveTemplate();
+      clearRememberedTemplate();
+      setTemplates((current) => current.map((row) => ({ ...row, active: false })));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Active template could not be cleared.");
+    } finally {
+      setDeactivating(false);
+    }
+  };
+
   const emptyLibrary = !loading && templates.length === 0;
 
   return (
-    <section className="tm">
-      <header className="tm-header">
-        <div>
-          <h1>Templates</h1>
-          <p className="tm-lead">
-            Define the fields once, set one template as active, then extract with those fields.
-          </p>
-        </div>
-        <div className="tm-header-actions">
-          <button type="button" className="tm-btn tm-btn-primary" onClick={() => navigate("/templates/new")}>
-            New template
-          </button>
-        </div>
-      </header>
-
+    <section className="tm hub">
       {error && <p className="tm-error">{error}</p>}
       {loading && <p className="tm-note">Loading templates…</p>}
 
-      {emptyLibrary ? (
-        <div className="tm-empty">
-          <p className="tm-note">No templates yet. Upload one example, or start from a blank field list.</p>
-          <SampleUploadCard />
+      {!loading && (
+        <div className="hub-library-tools">
+          <label className="hub-search-wrap">
+            <span className="hub-search-icon" aria-hidden="true">
+              ⌕
+            </span>
+            <input
+              className="hub-search"
+              type="search"
+              placeholder="Search templates"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              aria-label="Search templates"
+            />
+          </label>
+          <select
+            className="hub-category"
+            aria-label="Template category"
+            value={category}
+            onChange={(event) =>
+              setCategory(event.target.value as (typeof HUB_FILTERS)[number])
+            }
+          >
+            {HUB_FILTERS.map((filter) => (
+              <option key={filter} value={filter}>
+                {filter}
+              </option>
+            ))}
+          </select>
+          <button type="button" className="hub-btn-primary create" onClick={() => setCreateOpen(true)}>
+            + Create New Template
+          </button>
         </div>
-      ) : (
-        !loading && (
-          <>
-            <div className="tm-grid">
-              {visible.map((template) => (
-                <article className={template.active ? "tm-card tm-card-active" : "tm-card"} key={template.id}>
-                  <div className="tm-card-top">
-                    <h3>{template.name}</h3>
-                    <div className="tm-card-top-meta">
-                      {template.active && <span className="tm-active-badge">Active</span>}
-                      <span className="tm-version">v{template.version}</span>
-                      <button
-                        type="button"
-                        className="tm-card-x"
-                        aria-label={`Delete ${template.name}`}
-                        disabled={deletingId === template.id}
-                        onClick={() => void onDelete(template)}
-                      >
-                        ×
-                      </button>
-                    </div>
-                  </div>
-                  <div className="tm-card-fields">
-                    {template.fields.slice(0, 4).map((field) => (
-                      <span className="tm-chip" key={field.id}>
-                        {field.name}
+      )}
+
+      {!loading && active && (
+        <article className="hub-hero compact">
+          <div className="hub-hero-main">
+            <div className="hub-hero-title-row">
+              <span className="hub-hero-dot" aria-hidden="true" />
+              <h2>
+                {active.name} <span className="hub-hero-ver">v{active.version}</span>
+              </h2>
+              {isDefaultTemplate(active.name) && <span className="hub-default-tag">Built-in</span>}
+              <span className="hub-hero-sub-inline">{categorySubtitle(active.category)}</span>
+            </div>
+            <div className="hub-hero-meta">
+              <span>{active.fields.length} fields</span>
+              {fieldMix(active).header > 0 && <span>{fieldMix(active).header} header</span>}
+              {fieldMix(active).line > 0 && <span>{fieldMix(active).line} line</span>}
+              {active.documentCount > 0 && (
+                <span>
+                  {active.documentCount} document{active.documentCount === 1 ? "" : "s"}
+                </span>
+              )}
+              {updatedOn(active.updatedAt) && <span>Updated {updatedOn(active.updatedAt)}</span>}
+            </div>
+            {active.fields.length > 0 && (
+              <div className="hub-chip-row">
+                {active.fields.slice(0, 6).map((field) => (
+                  <span key={field.id}>{field.name}</span>
+                ))}
+                {active.fields.length > 6 && <span>+{active.fields.length - 6}</span>}
+              </div>
+            )}
+          </div>
+
+          <div className="hub-hero-actions">
+            <button
+              type="button"
+              className="hub-btn-primary"
+              onClick={() => navigate(`/templates/${active.id}/edit`)}
+            >
+              Edit
+            </button>
+            <button type="button" className="hub-btn-ghost" onClick={() => navigate("/")}>
+              Test
+            </button>
+            <button
+              type="button"
+              className="hub-btn-ghost danger"
+              disabled={deactivating}
+              onClick={() => void onDeactivate()}
+            >
+              {deactivating ? "…" : "Deactivate"}
+            </button>
+          </div>
+        </article>
+      )}
+
+      {!loading && !active && !emptyLibrary && (
+        <div className="hub-empty-active">
+          <strong>No active template</strong>
+          <p>Choose Set as Active on a card below to pin it here.</p>
+        </div>
+      )}
+
+      {!loading && (
+        <section className="hub-library">
+          <div className="hub-library-bar">
+            <h3>
+              Created Templates <span>({templates.length})</span>
+            </h3>
+          </div>
+
+          {emptyLibrary ? (
+            <div className="hub-empty-library">
+              <p>No templates yet. Create one to get started.</p>
+              <button type="button" className="hub-btn-primary" onClick={() => setCreateOpen(true)}>
+                + Create New Template
+              </button>
+            </div>
+          ) : filtered.length === 0 ? (
+            <p className="tm-note">No templates match that search or category.</p>
+          ) : (
+            <div className="hub-grid">
+              {filtered.map((template) => (
+                <article className="hub-card" key={template.id}>
+                  <button
+                    type="button"
+                    className="hub-card-x"
+                    aria-label={`Delete ${template.name}`}
+                    disabled={deletingId === template.id}
+                    onClick={() => void onDelete(template)}
+                  >
+                    ×
+                  </button>
+                  <button
+                    type="button"
+                    className="hub-card-body"
+                    onClick={() => navigate(`/templates/${template.id}/edit`)}
+                  >
+                    <div className="hub-card-top">
+                      <span className="hub-card-mark" aria-hidden="true">
+                        {template.name.slice(0, 1).toUpperCase()}
                       </span>
-                    ))}
-                    {template.fields.length > 4 && (
-                      <span className="tm-chip">+{template.fields.length - 4}</span>
+                      <div>
+                        <h4>{template.name}</h4>
+                        <p>{categorySubtitle(template.category)}</p>
+                      </div>
+                    </div>
+                    <div className="hub-card-stats">
+                      <span>v{template.version}</span>
+                      <span>{template.fields.length} fields</span>
+                      {fieldMix(template).header > 0 && <span>{fieldMix(template).header} header</span>}
+                      {fieldMix(template).line > 0 && <span>{fieldMix(template).line} line</span>}
+                    </div>
+                    {template.fields.length > 0 && (
+                      <div className="hub-chip-row">
+                        {template.fields.slice(0, 3).map((field) => (
+                          <span key={field.id}>{field.name}</span>
+                        ))}
+                        {template.fields.length > 3 && <span>+{template.fields.length - 3}</span>}
+                      </div>
                     )}
-                  </div>
-                  <p className="tm-stats">{statsLine(template)}</p>
-                  <div className="tm-card-actions">
-                    <button
-                      type="button"
-                      className={template.active ? "tm-btn tm-btn-active" : "tm-btn tm-btn-primary"}
-                      disabled={template.active || activatingId === template.id}
-                      onClick={() => void onActivate(template)}
-                    >
-                      {template.active
-                        ? "Active for extraction"
-                        : activatingId === template.id
-                          ? "Setting…"
-                          : "Set as active"}
-                    </button>
-                    <button type="button" className="tm-btn" onClick={() => navigate(`/templates/${template.id}/edit`)}>
-                      Edit
-                    </button>
-                  </div>
+                    <p className="hub-card-foot">
+                      {template.documentCount > 0
+                        ? `Used on ${template.documentCount} document${template.documentCount === 1 ? "" : "s"}`
+                        : "Not used on a document yet"}
+                      {updatedOn(template.updatedAt) ? ` · Updated ${updatedOn(template.updatedAt)}` : ""}
+                    </p>
+                  </button>
+                  <button
+                    type="button"
+                    className="hub-set-active"
+                    disabled={activatingId === template.id}
+                    onClick={() => void onActivate(template)}
+                  >
+                    {activatingId === template.id ? "Setting…" : "Set as Active"}
+                  </button>
                 </article>
               ))}
-              {currentPage === pageCount && <SampleUploadCard />}
             </div>
-            {pageCount > 1 && (
-              <nav className="tm-pager" aria-label="Template pages">
-                <button
-                  type="button"
-                  className="tm-btn"
-                  disabled={currentPage <= 1}
-                  onClick={() => setPage((value) => Math.max(1, value - 1))}
-                >
-                  Previous
-                </button>
-                <span>
-                  Page {currentPage} of {pageCount} · {templates.length} templates · {PAGE_SIZE} per page
-                </span>
-                <button
-                  type="button"
-                  className="tm-btn"
-                  disabled={currentPage >= pageCount}
-                  onClick={() => setPage((value) => Math.min(pageCount, value + 1))}
-                >
-                  Next
-                </button>
-              </nav>
-            )}
-          </>
-        )
+          )}
+        </section>
+      )}
+
+      {createOpen && (
+        <div className="hub-modal-backdrop" role="presentation" onClick={() => setCreateOpen(false)}>
+          <div
+            className="hub-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="hub-create-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 id="hub-create-title">Create New Template</h3>
+            <p>Name your schema, then configure fields in Template Studio.</p>
+            <label className="hub-modal-field">
+              Template name
+              <input
+                value={createName}
+                onChange={(event) => setCreateName(event.target.value)}
+                autoFocus
+              />
+            </label>
+            <div className="hub-modal-actions">
+              <button type="button" className="hub-btn-ghost" onClick={() => setCreateOpen(false)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="hub-btn-primary"
+                onClick={() => {
+                  setCreateOpen(false);
+                  navigate("/templates/new", {
+                    state: { name: createName.trim() || "Untitled template" },
+                  });
+                }}
+              >
+                Continue
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </section>
-  );
-};
-
-const statsLine = (template: TemplateSummary) => {
-  const documents = `${template.documentCount.toLocaleString("en-US")} document${template.documentCount === 1 ? "" : "s"}`;
-  if (template.autoApprovedPercent == null) return documents;
-  return `${documents} · ${template.autoApprovedPercent}% auto-approved`;
-};
-
-const SampleUploadCard = () => {
-  const navigate = useNavigate();
-  return (
-    <article className="tm-sample-card">
-      <h3>Create from documents</h3>
-      <p>Upload one document or several. Matching fields are filled in from the catalog.</p>
-      <label className="tm-btn tm-btn-primary">
-        Upload documents
-        <input
-          type="file"
-          multiple
-          hidden
-          onChange={(event) => {
-            const files = [...(event.target.files ?? [])];
-            if (!files.length) return;
-            navigate("/templates/new", { state: { files } });
-          }}
-        />
-      </label>
-    </article>
   );
 };

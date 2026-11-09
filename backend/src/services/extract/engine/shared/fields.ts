@@ -106,7 +106,7 @@ export const LINE_FIELDS: CatalogField[] = [
     dataType: CODE,
     isDefault: true,
     description:
-      "The 3-letter ISO currency code from the line or the document (US Dollar -> USD, UAE Dirham -> AED).",
+      "The 3-letter ISO currency code printed on this line when it differs from the document currency (US Dollar -> USD). Leave empty when the line uses the document currency.",
   },
   {
     key: "technical_specification",

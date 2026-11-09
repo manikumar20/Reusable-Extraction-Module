@@ -76,6 +76,8 @@ export type ExtractDocumentInput = {
   lineKeys?: string[];
   /** Explicit optional line fields (catalogue or custom). Wins over lineKeys when provided. Defaults always included. */
   lineExtras?: CatalogField[];
+  /** Header fields for this template. An empty list extracts none. Omitted uses headerKeys. */
+  headerFields?: CatalogField[];
   /** Abort in-flight Claude/PDF work when a newer job supersedes this one. */
   signal?: AbortSignal;
   /** Called with each batch of buy lines as soon as those objects are complete. */
@@ -115,6 +117,7 @@ export const extractDocument = async (
     headerKeys,
     lineKeys,
     lineExtras,
+    headerFields,
     signal,
     onRecords,
     onProgress,
@@ -130,7 +133,8 @@ export const extractDocument = async (
     throw new ExtractionError(499, "Extraction was cancelled.", "JOB_CANCELLED");
   }
 
-  const headerCatalog = byKeys(HEADER_FIELDS, headerKeys);
+  const headerCatalog =
+    headerFields !== undefined ? headerFields : byKeys(HEADER_FIELDS, headerKeys);
   // No template → defaults only (matches Results UI). Template keys/extras add optionals.
   const selectedOptionals = lineKeys?.length
     ? byKeys(LINE_FIELDS, lineKeys).filter((field) => !field.isDefault)

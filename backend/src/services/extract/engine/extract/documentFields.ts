@@ -113,7 +113,7 @@ export const extractHeaderFields = async (input: {
   if (!apiKey) return empty;
   if (signal?.aborted) return empty;
 
-  const catalog = input.fields?.length ? input.fields : HEADER_FIELDS;
+  const catalog = input.fields ?? HEADER_FIELDS;
   const document =
     plainText && textIsUsable(plainText)
       ? textBlock(originalName, plainText)
@@ -139,7 +139,8 @@ export const extractHeaderFields = async (input: {
   };
 
   const client = new Anthropic({
-    apiKey,
+    apiKey: apiKey || null,
+    authToken: process.env.ANTHROPIC_AUTH_TOKEN?.trim() || undefined,
     timeout: HEADER_TIMEOUT_MS,
     maxRetries: CLAUDE_MAX_RETRIES,
   });

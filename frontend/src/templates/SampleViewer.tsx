@@ -98,20 +98,36 @@ export const SampleViewer = ({ file, fields, selectedId, onMap }: SampleViewerPr
                 onMap({ page, ...drawn });
               }}
             >
-              {boxes.map((field) => (
-                <div
-                  key={field.id}
-                  className={field.id === selectedId ? "tm-box selected" : "tm-box"}
-                  style={{
-                    left: `${field.sampleBox?.x ?? 0}%`,
-                    top: `${field.sampleBox?.y ?? 0}%`,
-                    width: `${field.sampleBox?.w ?? 0}%`,
-                    height: `${field.sampleBox?.h ?? 0}%`,
-                  }}
-                >
-                  {field.id === selectedId && <span>{field.name}</span>}
-                </div>
-              ))}
+              {boxes.map((field) => {
+                const tone =
+                  field.type === "number"
+                    ? "cyan"
+                    : field.type === "text"
+                      ? "purple"
+                      : field.type === "date"
+                        ? "blue"
+                        : field.type === "table"
+                          ? "amber"
+                          : "emerald";
+                return (
+                  <div
+                    key={field.id}
+                    className={
+                      field.id === selectedId
+                        ? `tm-box tone-${tone} selected`
+                        : `tm-box tone-${tone}`
+                    }
+                    style={{
+                      left: `${field.sampleBox?.x ?? 0}%`,
+                      top: `${field.sampleBox?.y ?? 0}%`,
+                      width: `${field.sampleBox?.w ?? 0}%`,
+                      height: `${field.sampleBox?.h ?? 0}%`,
+                    }}
+                  >
+                    <span>{field.name}</span>
+                  </div>
+                );
+              })}
               {draft && (
                 <div
                   className="tm-draft"

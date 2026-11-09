@@ -10,10 +10,13 @@ import {
 import { IMAGE_MEDIA, MAX_IMAGE_BYTES, SCAN_PAGES } from "../extract/engine/shared/constants.js";
 import { HttpError } from "../../utils/httpError.js";
 
-const SAMPLE_CHARS = 12_000;
-const TEXT_PAGES = 25;
-const SHEET_HEAD_CHARS = 1_500;
-const CHUNK_CHARS = 1_500;
+/** Keep samples small so template suggest stays as fast as extract-page header reads. */
+const SAMPLE_CHARS = 8_000;
+const TEXT_PAGES = 8;
+/** Vision path: enough pages for forms/scans without shipping the whole file. */
+const VISION_PAGES = Math.max(SCAN_PAGES, 5);
+const SHEET_HEAD_CHARS = 1_200;
+const CHUNK_CHARS = 1_200;
 
 const ITEM_WORDS =
   /\b(qty|quantity|uom|unit|units|item|items|sr\.?\s?no|s\/n|description|material|part\s?no|mpn|pcs|nos|each|ea|sets?|meters?|sq\/?\s?meter)\b/gi;
@@ -25,6 +28,11 @@ export type SampleDocument = {
   text: string;
   /** True when Claude must read pixels/PDF pages (no plain-text layer). */
   vision: boolean;
+};
+
+export type ReadSampleOptions = {
+  /** Skip the text layer and always send PDF pages / image pixels. */
+  forceVision?: boolean;
 };
 
 const extensionOf = (fileName: string) => {
@@ -106,10 +114,32 @@ const textSample = (title: string, fullText: string): SampleDocument => {
   };
 };
 
+const pdfVisionSample = async (
+  buffer: Buffer,
+  originalName: string,
+): Promise<SampleDocument | null> => {
+  const [firstPages] = await splitPdfParts(buffer, VISION_PAGES);
+  if (!firstPages) return null;
+  return {
+    block: {
+      type: "document",
+      title: originalName,
+      source: {
+        type: "base64",
+        media_type: "application/pdf",
+        data: firstPages.toString("base64"),
+      },
+    },
+    text: "",
+    vision: true,
+  };
+};
+
 /** Load a template-sample file as Claude text or vision content. */
 export const readSampleDocument = async (
   filePath: string,
   originalName: string,
+  options?: ReadSampleOptions,
 ): Promise<SampleDocument | null> => {
   const buffer = await fs.readFile(filePath);
   const pathExt = extensionOf(originalName) || extensionOf(filePath);
@@ -134,30 +164,19 @@ export const readSampleDocument = async (
     };
   }
   if (ext === ".pdf") {
-    const [textPages] = await splitPdfParts(buffer, TEXT_PAGES);
-    if (!textPages) return null;
-    let text = "";
-    try {
-      text = (await pdfRowText(textPages)).text;
-    } catch (error) {
-      console.error(`PDF text read failed for ${originalName}:`, error);
+    if (!options?.forceVision) {
+      const [textPages] = await splitPdfParts(buffer, TEXT_PAGES);
+      if (textPages) {
+        let text = "";
+        try {
+          text = (await pdfRowText(textPages)).text;
+        } catch (error) {
+          console.error(`PDF text read failed for ${originalName}:`, error);
+        }
+        if (textIsUsable(text)) return textSample(originalName, text);
+      }
     }
-    if (textIsUsable(text)) return textSample(originalName, text);
-    const [firstPages] = await splitPdfParts(buffer, SCAN_PAGES);
-    if (!firstPages) return null;
-    return {
-      block: {
-        type: "document",
-        title: originalName,
-        source: {
-          type: "base64",
-          media_type: "application/pdf",
-          data: firstPages.toString("base64"),
-        },
-      },
-      text: "",
-      vision: true,
-    };
+    return pdfVisionSample(buffer, originalName);
   }
   if (ext === ".txt") {
     const text = buffer.toString("utf8");

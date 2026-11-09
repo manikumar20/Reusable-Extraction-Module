@@ -8,10 +8,12 @@ import {
 } from "./engine/extract/records.js";
 import {
   FIELD_DATA_TYPES,
+  HEADER_FIELDS,
   LINE_FIELDS,
   type CatalogField,
 } from "./engine/shared/fields.js";
 import { tokenCostUsd, type ExtractionTokenUsage } from "./engine/shared/tokens.js";
+import { saveExtractedFields, updateDocumentStatus } from "../../db/documents/documentDb.js";
 import { getTemplate } from "../../db/templates/templateDb.js";
 import { apiKey, documentModel, recordModel } from "../../config/runtime.js";
 
@@ -40,7 +42,7 @@ export type PublicJob = {
   error: { message: string; code: string; status: number } | null;
 };
 
-type Job = PublicJob & { listeners: Set<() => void> };
+type Job = PublicJob & { listeners: Set<() => void>; documentId: number | null };
 
 const jobs = new Map<string, Job>();
 
@@ -61,30 +63,40 @@ const slugKey = (value: string) =>
     .replace(/[^a-z0-9]+/g, "_")
     .replace(/^_+|_+$/g, "");
 
-/** Resolve optional/custom line fields from the saved template definition. */
-const extrasFromTemplate = async (template: JobTemplate | null) => {
+/**
+ * Split a saved template into header fields and optional line fields.
+ * Custom fields that are not catalogue line columns are read as header values,
+ * so a template such as Patient Name is saved and shown after extract.
+ */
+const schemaFromTemplate = async (template: JobTemplate | null) => {
   if (!template?.id) return undefined;
   const saved = await getTemplate(template.id);
   if (!saved) return undefined;
-  const byKey = new Map(LINE_FIELDS.map((field) => [field.key, field]));
-  return saved.fields.flatMap((field) => {
-    if (field.level === "header") return [];
-    if (field.catalogKey && byKey.has(field.catalogKey)) {
-      const catalog = byKey.get(field.catalogKey);
-      return catalog && !catalog.isDefault ? [catalog] : [];
+  const headerByKey = new Map(HEADER_FIELDS.map((field) => [field.key, field]));
+  const lineByKey = new Map(LINE_FIELDS.map((field) => [field.key, field]));
+  const headerFields: CatalogField[] = [];
+  const lineExtras: CatalogField[] = [];
+  for (const field of saved.fields) {
+    const key = field.catalogKey?.trim() || slugKey(field.name);
+    if (!key) continue;
+    const lineCatalog = lineByKey.get(key);
+    if (field.level !== "header" && lineCatalog) {
+      if (!lineCatalog.isDefault) lineExtras.push(lineCatalog);
+      continue;
     }
-    if (!field.catalogKey && !field.name.trim()) return [];
-    const key = field.catalogKey || slugKey(field.name);
-    if (byKey.has(key) && byKey.get(key)?.isDefault) return [];
-    return [
-      {
-        key,
-        label: field.name,
-        dataType: typeFromTemplate(field.type),
-        description: field.hint || field.validation || field.name,
-      } satisfies CatalogField,
-    ];
-  });
+    const headerCatalog = headerByKey.get(key);
+    if (headerCatalog) {
+      headerFields.push(headerCatalog);
+      continue;
+    }
+    headerFields.push({
+      key,
+      label: field.name.trim() || key,
+      dataType: typeFromTemplate(field.type),
+      description: field.hint || field.validation || field.name,
+    });
+  }
+  return { headerFields, lineExtras };
 };
 
 /** A later batch for the same line identity replaces the earlier row. */
@@ -134,7 +146,11 @@ const view = (job: Job): PublicJob => ({
 const phaseFor = (percent: number): JobPhase =>
   percent < 20 ? "reading" : percent >= 99 ? "header" : "lines";
 
-export const createJob = (fileName: string, template: JobTemplate | null = null): PublicJob => {
+export const createJob = (
+  fileName: string,
+  template: JobTemplate | null = null,
+  documentId: number | null = null,
+): PublicJob => {
   if (activeJobAbort) {
     activeJobAbort.abort();
     activeJobAbort = null;
@@ -165,6 +181,7 @@ export const createJob = (fileName: string, template: JobTemplate | null = null)
     headerCostUsd: 0,
     template,
     error: null,
+    documentId,
     listeners: new Set(),
   };
   jobs.set(job.id, job);
@@ -195,7 +212,7 @@ export const runJob = async (id: string, filePath: string, fileName: string) => 
   activeJobAbort = abort;
 
   try {
-    const lineExtras = await extrasFromTemplate(job.template);
+    const schema = await schemaFromTemplate(job.template);
     const result = await extractDocument({
       filePath,
       fileName,
@@ -204,7 +221,8 @@ export const runJob = async (id: string, filePath: string, fileName: string) => 
       documentModel: documentModel(),
       headerKeys: job.template?.headerKeys,
       lineKeys: job.template?.lineKeys,
-      lineExtras,
+      headerFields: schema?.headerFields,
+      lineExtras: schema?.lineExtras,
       signal: abort.signal,
       onProgress: async (percent) => {
         if (abort.signal.aborted) return;
@@ -228,6 +246,13 @@ export const runJob = async (id: string, filePath: string, fileName: string) => 
     job.status = "done";
     job.phase = "done";
     job.progress = 100;
+    if (job.documentId != null) {
+      await saveExtractedFields({
+        documentId: job.documentId,
+        header: job.header,
+        lines: job.lines,
+      });
+    }
   } catch (error) {
     if (abort.signal.aborted || job.status !== "running") return;
     const known = error instanceof ExtractionError ? error : null;
@@ -245,6 +270,9 @@ export const runJob = async (id: string, filePath: string, fileName: string) => 
       code: cancelled ? "JOB_SUPERSEDED" : (known?.code ?? "EXTRACTION_FAILED"),
       status: cancelled ? 499 : (known?.status ?? 500),
     };
+    if (job.documentId != null && !cancelled) {
+      await updateDocumentStatus(job.documentId, "Failed").catch(() => undefined);
+    }
     if (!cancelled) {
       console.error(`Job ${id} failed for ${fileName}: ${job.error.message}`);
     }

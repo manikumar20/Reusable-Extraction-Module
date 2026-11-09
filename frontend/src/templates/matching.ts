@@ -57,18 +57,19 @@ export const fieldsFromSuggestions = (
     const suggestions = document.suggestions as FieldSuggestions;
     const seenMatched = new Set<string>();
     for (const hit of suggestions.matched) {
-      if (!byKey.has(hit.key) || dismissed.has(hit.key) || seenMatched.has(hit.key)) continue;
+      if (dismissed.has(hit.key) || seenMatched.has(hit.key)) continue;
       seenMatched.add(hit.key);
-      const catalogField = byKey.get(hit.key)!;
+      const catalogField = byKey.get(hit.key);
+      // Keep API matches even if the local catalogue has not loaded yet.
       const row = matchedVotes.get(hit.key) ?? {
-        label: catalogField.label,
-        type: dataTypeToFieldType(catalogField.dataType),
+        label: catalogField?.label || hit.label || hit.printedLabel || hit.key,
+        type: dataTypeToFieldType(catalogField?.dataType ?? "TEXT"),
         hits: 0,
         sampleValue: hit.sampleValue,
         level: headerKeys.has(hit.key) ? "header" : "line",
       };
       row.hits += 1;
-      row.label = catalogField.label;
+      if (catalogField?.label) row.label = catalogField.label;
       row.level = headerKeys.has(hit.key) ? "header" : "line";
       if (hit.sampleValue) row.sampleValue = hit.sampleValue;
       matchedVotes.set(hit.key, row);

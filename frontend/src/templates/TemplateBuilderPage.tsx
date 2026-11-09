@@ -41,8 +41,8 @@ export const TemplateBuilderPage = () => {
   const { id } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
-  const incoming = location.state as { sample?: File; files?: File[] } | null;
-  const [name, setName] = useState("Untitled template");
+  const incoming = location.state as { sample?: File; files?: File[]; name?: string } | null;
+  const [name, setName] = useState(incoming?.name?.trim() || "Untitled template");
   const [category, setCategory] = useState<TemplateCategory>("Finance");
   const [version, setVersion] = useState(1);
   const [fields, setFields] = useState<TemplateField[]>([]);
@@ -51,6 +51,7 @@ export const TemplateBuilderPage = () => {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [fieldQuery, setFieldQuery] = useState("");
   const dismissed = useRef(new Set<string>());
   const started = useRef(false);
   const readingIds = useRef(new Set<string>());
@@ -178,7 +179,7 @@ export const TemplateBuilderPage = () => {
 
   useEffect(() => {
     const previous = document.title;
-    document.title = "Template Builder";
+    document.title = "Template Studio · ExtractIQ";
     return () => {
       document.title = previous;
     };
@@ -191,6 +192,13 @@ export const TemplateBuilderPage = () => {
         if (cancelled) return;
         catalog.current = fieldsFromCatalog.all;
         headerCatalogKeys.current = new Set(fieldsFromCatalog.header.map((field) => field.key));
+        // Re-apply suggestions once the catalogue arrives (suggest can finish first).
+        setDocuments((current) => {
+          if (current.some((document) => document.status === "ready" && document.suggestions)) {
+            rebuild(current);
+          }
+          return current;
+        });
       })
       .catch(() => undefined);
     return () => {
@@ -287,50 +295,56 @@ export const TemplateBuilderPage = () => {
     }
   };
 
+  const addField = () => {
+    const field = newTemplateField();
+    setFields((current) => [...current, field]);
+    setSelectedId(field.id);
+  };
+
   return (
-    <section className="tm tm-builder">
+    <section className="tm tm-builder tm-studio">
       <header className="tm-builder-head">
         <div className="tm-builder-title">
-          <input
-            className="tm-input tm-name"
-            aria-label="Template name"
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-          />
-          <span className="tm-version">· v{version}</span>
-          <span className="tm-badge">Draft</span>
+          <nav className="tm-crumbs" aria-label="Breadcrumb">
+            <button type="button" className="tm-crumb" onClick={() => navigate("/templates")}>
+              Templates
+            </button>
+            <span className="tm-crumb-sep" aria-hidden="true">
+              ›
+            </span>
+            <input
+              className="tm-input tm-name"
+              aria-label="Template name"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+            />
+          </nav>
+          <span className="tm-version">v{version}.0</span>
+          <span className="tm-badge tm-badge-active">Draft</span>
         </div>
         <div className="tm-builder-actions">
+          <input
+            className="tm-search"
+            type="search"
+            placeholder="Search fields…"
+            value={fieldQuery}
+            onChange={(event) => setFieldQuery(event.target.value)}
+            aria-label="Search fields"
+          />
+          <button type="button" className="tm-btn" onClick={addField}>
+            + Add Field
+          </button>
           <button type="button" className="tm-btn tm-btn-primary" disabled={saving} onClick={() => void persist()}>
-            {saving ? "Saving…" : "Save template"}
+            {saving ? "Saving…" : "Save & Publish"}
           </button>
         </div>
       </header>
       {error && <p className="tm-error">{error}</p>}
       <div className="tm-layout">
-        <DocumentStage
-          documents={documents}
-          activeId={activeId}
-          fields={fields}
-          selectedFieldId={selectedId}
-          onAdd={addFiles}
-          onSelect={setActiveId}
-          onRemove={(documentId) => {
-            setDocuments((current) => {
-              const next = current.filter((document) => document.id !== documentId);
-              setActiveId((currentId) => (currentId === documentId ? (next[0]?.id ?? null) : currentId));
-              rebuild(next);
-              return next;
-            });
-          }}
-          onMap={(box) => {
-            if (!selected) return;
-            updateField({ ...selected, sampleBox: box });
-          }}
-        />
         <FieldList
           fields={fields}
           selectedId={selectedId}
+          query={fieldQuery}
           onSelect={setSelectedId}
           onReorder={setFields}
           onAccept={(fieldId) =>
@@ -350,11 +364,7 @@ export const TemplateBuilderPage = () => {
             setFields(next);
             setSelectedId(next[0]?.id ?? null);
           }}
-          onAdd={() => {
-            const field = newTemplateField();
-            setFields((current) => [...current, field]);
-            setSelectedId(field.id);
-          }}
+          onAdd={addField}
           onDelete={(fieldId) => {
             const removed = fields.find((field) => field.id === fieldId);
             if (removed?.catalogKey) dismissed.current.add(removed.catalogKey);
@@ -362,6 +372,26 @@ export const TemplateBuilderPage = () => {
             const next = fields.filter((field) => field.id !== fieldId);
             setFields(next);
             setSelectedId(next[0]?.id ?? null);
+          }}
+        />
+        <DocumentStage
+          documents={documents}
+          activeId={activeId}
+          fields={fields}
+          selectedFieldId={selectedId}
+          onAdd={addFiles}
+          onSelect={setActiveId}
+          onRemove={(documentId) => {
+            setDocuments((current) => {
+              const next = current.filter((document) => document.id !== documentId);
+              setActiveId((currentId) => (currentId === documentId ? (next[0]?.id ?? null) : currentId));
+              rebuild(next);
+              return next;
+            });
+          }}
+          onMap={(box) => {
+            if (!selected) return;
+            updateField({ ...selected, sampleBox: box });
           }}
         />
       </div>
