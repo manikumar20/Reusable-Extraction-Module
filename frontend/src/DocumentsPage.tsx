@@ -1,20 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { extensionOf } from "./format";
+import DocTypeIcon from "./components/DocTypeIcon";
+import { jobFromDocument, mimeForFileName } from "./jobFromDocument";
 import { Results } from "./Results";
 import { apiUrl } from "./services/api";
-import type { ExtractedFieldRow, Job, StoredDocument } from "./types";
+import type { ExtractedFieldRow, StoredDocument } from "./types";
 
 const uploadedAt = (value: string) => {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString();
-};
-
-const typeLabel = (document: StoredDocument) => {
-  if (document.documentType?.trim()) return document.documentType;
-  const ext = extensionOf(document.fileName).replace(".", "").toUpperCase();
-  return ext || "Document";
 };
 
 const sourceLabel = (source: string) => {
@@ -32,35 +27,6 @@ const statusClass = (status: string) => {
   return "pending";
 };
 
-const jobFromDocument = (document: StoredDocument, fields: ExtractedFieldRow[]): Job => {
-  const header: Record<string, string> = {};
-  for (const field of fields) {
-    const key = field.fieldKey?.trim() || field.fieldName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
-    if (!key) continue;
-    header[key] = field.fieldValue;
-  }
-  const done = (document.status || "").toLowerCase() === "completed" || fields.length > 0;
-  return {
-    id: `document-${document.id}`,
-    fileName: document.fileName,
-    status: done ? "done" : document.status?.toLowerCase() === "failed" ? "error" : "running",
-    phase: done ? "done" : "reading",
-    progress: done ? 100 : 40,
-    header,
-    lines: [],
-    usage: { inputTokens: 0, outputTokens: 0 },
-    headerUsage: { inputTokens: 0, outputTokens: 0 },
-    lineCostUsd: 0,
-    headerCostUsd: 0,
-    template: {
-      name: "Saved extraction",
-      headerKeys: Object.keys(header),
-      lineKeys: [],
-    },
-    error: null,
-  };
-};
-
 export const DocumentsPage = () => {
   const [documents, setDocuments] = useState<StoredDocument[]>([]);
   const [loading, setLoading] = useState(true);
@@ -70,6 +36,7 @@ export const DocumentsPage = () => {
   const [fields, setFields] = useState<ExtractedFieldRow[]>([]);
   const [fieldsError, setFieldsError] = useState("");
   const [fieldsLoading, setFieldsLoading] = useState(false);
+  const [previewFile, setPreviewFile] = useState<File | null>(null);
 
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
@@ -104,15 +71,32 @@ export const DocumentsPage = () => {
     setOpenId(document.id);
     setFieldsError("");
     setFieldsLoading(true);
+    setPreviewFile(null);
     try {
-      const response = await fetch(apiUrl(`/documents/${document.id}/fields`));
-      if (!response.ok) throw new Error("Extracted fields could not be loaded.");
-      const payload = (await response.json()) as { fields?: ExtractedFieldRow[] };
+      const fieldsResponse = await fetch(apiUrl(`/documents/${document.id}/fields`));
+      if (!fieldsResponse.ok) throw new Error("Extracted fields could not be loaded.");
+      const payload = (await fieldsResponse.json()) as { fields?: ExtractedFieldRow[] };
       setFields(payload.fields ?? []);
+      // Open the studio as soon as fields are ready — PDF download must not block review.
+      setFieldsLoading(false);
+
+      void fetch(apiUrl(`/documents/${document.id}/file`))
+        .then(async (fileResponse) => {
+          if (!fileResponse.ok) return;
+          const blob = await fileResponse.blob();
+          const type = mimeForFileName(
+            document.fileName,
+            blob.type || document.mimeType || fileResponse.headers.get("Content-Type") || "",
+          );
+          setPreviewFile(new File([blob], document.fileName, { type }));
+        })
+        .catch(() => {
+          /* preview stays empty; extracted fields still usable */
+        });
     } catch (reason) {
       setFields([]);
+      setPreviewFile(null);
       setFieldsError(reason instanceof Error ? reason.message : "Extracted fields could not be loaded.");
-    } finally {
       setFieldsLoading(false);
     }
   }, []);
@@ -121,6 +105,7 @@ export const DocumentsPage = () => {
     setOpenId(null);
     setFields([]);
     setFieldsError("");
+    setPreviewFile(null);
   };
 
   const removeDocument = async (document: StoredDocument) => {
@@ -170,14 +155,26 @@ export const DocumentsPage = () => {
 
   if (open && reviewJob) {
     return (
-      <Results
-        catalog={null}
-        job={reviewJob}
-        documents={documents}
-        backLabel="Back to Documents"
-        onBack={closeReview}
-        onNextDocument={closeReview}
-      />
+      <section className="upload-page extract-studio reviewing">
+        <Results
+          catalog={null}
+          job={reviewJob}
+          documents={documents}
+          previewFile={previewFile}
+          documentId={open.id}
+          persistedFields={fields}
+          onFieldsChanged={() => void load(true)}
+          backLabel="Back to Documents"
+          onBack={() => {
+            void load(true);
+            closeReview();
+          }}
+          onNextDocument={() => {
+            void load(true);
+            closeReview();
+          }}
+        />
+      </section>
     );
   }
 
@@ -226,7 +223,7 @@ export const DocumentsPage = () => {
       {!loading && !error && documents.length === 0 && (
         <div className="docs-empty">
           <strong>No documents yet</strong>
-          <p>Upload files on Extract &amp; Ingest. Extracted files are saved here automatically.</p>
+          <p>Extract files on Extract &amp; Ingest, then click Save to keep them here.</p>
           <Link className="ingest-browse" to="/">
             Go to Extract &amp; Ingest
           </Link>
@@ -263,8 +260,8 @@ export const DocumentsPage = () => {
                       {document.fileName}
                     </strong>
                   </td>
-                  <td>
-                    <span className="docs-type">{typeLabel(document)}</span>
+                  <td className="docs-type-cell">
+                    <DocTypeIcon fileName={document.fileName} />
                   </td>
                   <td>{document.totalFields ?? 0}</td>
                   <td>

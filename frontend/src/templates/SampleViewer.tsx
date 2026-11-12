@@ -1,11 +1,9 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Document, Page, pdfjs } from "react-pdf";
-import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import { Document, Page } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
+import "../pdfWorker";
 import type { SampleBox, TemplateField } from "./types";
-
-pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
 type SampleViewerProps = {
   file: File | null;
@@ -16,7 +14,7 @@ type SampleViewerProps = {
 
 type Draft = { x: number; y: number; w: number; h: number };
 
-export const SampleViewer = ({ file, fields, selectedId, onMap }: SampleViewerProps) => {
+export const SampleViewer = ({ file, selectedId, onMap }: SampleViewerProps) => {
   const [url, setUrl] = useState("");
   const [page, setPage] = useState(1);
   const [pages, setPages] = useState(1);
@@ -51,8 +49,6 @@ export const SampleViewer = ({ file, fields, selectedId, onMap }: SampleViewerPr
       y: ((event.clientY - bounds.top) / bounds.height) * 100,
     };
   };
-
-  const boxes = fields.filter((field) => field.sampleBox?.page === page && field.sampleBox.w > 0);
 
   return (
     <div className="tm-viewer">
@@ -97,44 +93,7 @@ export const SampleViewer = ({ file, fields, selectedId, onMap }: SampleViewerPr
                 if (!drawn || drawn.w < 0.8 || drawn.h < 0.8) return;
                 onMap({ page, ...drawn });
               }}
-            >
-              {boxes.map((field) => {
-                const tone =
-                  field.type === "number"
-                    ? "cyan"
-                    : field.type === "text"
-                      ? "purple"
-                      : field.type === "date"
-                        ? "blue"
-                        : field.type === "table"
-                          ? "amber"
-                          : "emerald";
-                return (
-                  <div
-                    key={field.id}
-                    className={
-                      field.id === selectedId
-                        ? `tm-box tone-${tone} selected`
-                        : `tm-box tone-${tone}`
-                    }
-                    style={{
-                      left: `${field.sampleBox?.x ?? 0}%`,
-                      top: `${field.sampleBox?.y ?? 0}%`,
-                      width: `${field.sampleBox?.w ?? 0}%`,
-                      height: `${field.sampleBox?.h ?? 0}%`,
-                    }}
-                  >
-                    <span>{field.name}</span>
-                  </div>
-                );
-              })}
-              {draft && (
-                <div
-                  className="tm-draft"
-                  style={{ left: `${draft.x}%`, top: `${draft.y}%`, width: `${draft.w}%`, height: `${draft.h}%` }}
-                />
-              )}
-            </div>
+            />
           </div>
         </div>
       )}

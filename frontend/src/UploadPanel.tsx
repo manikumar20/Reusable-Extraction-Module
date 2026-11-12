@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import DocTypeIcon from "./components/DocTypeIcon";
 import { extensionOf, FALLBACK_ACCEPT } from "./format";
 import type { Job, ServerConfig } from "./types";
 import type { TemplateSummary } from "./templates/types";
@@ -10,9 +11,13 @@ export type QueueItem = {
   status: "ready" | "running" | "done" | "error";
   progress: number;
   jobId?: string;
+  documentId?: number;
   message?: string;
   fieldCount?: number;
   confidence?: number;
+  saved?: boolean;
+  /** Completed extraction snapshot — used by Inspect Results even after SSE closes. */
+  result?: Job;
 };
 
 type UploadPanelProps = {
@@ -25,11 +30,14 @@ type UploadPanelProps = {
   templates: TemplateSummary[];
   queue: QueueItem[];
   batchMode: boolean;
+  saving?: boolean;
   onBatchModeChange: (value: boolean) => void;
   onSelectTemplate: (id: string) => void;
   onAddFiles: (files: File[]) => void;
   onExtract: (itemId: string) => void;
   onExtractAll: () => void;
+  onSave: () => void;
+  onImportDrive: (url: string) => Promise<void>;
   onInspect: (itemId: string) => void;
   onRemove: (itemId: string) => void;
 };
@@ -138,22 +146,48 @@ export const UploadPanel = ({
   templates,
   queue,
   batchMode,
+  saving = false,
   onBatchModeChange,
   onSelectTemplate,
   onAddFiles,
   onExtract,
   onExtractAll,
+  onSave,
+  onImportDrive,
   onInspect,
   onRemove,
 }: UploadPanelProps) => {
   const [dragOver, setDragOver] = useState(false);
   const [localError, setLocalError] = useState("");
+  const [driveUrl, setDriveUrl] = useState("");
+  const [driveLoading, setDriveLoading] = useState(false);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const accept = config?.accept ?? FALLBACK_ACCEPT;
   const maxUpload = config?.maxUploadMb ?? 25;
   const maxImage = config?.maxImageMb ?? 5;
-  const busy = uploading || job?.status === "running" || queue.some((item) => item.status === "running");
+  const busy =
+    uploading ||
+    driveLoading ||
+    job?.status === "running" ||
+    queue.some((item) => item.status === "running");
   const readyCount = queue.filter((item) => item.status === "ready").length;
+  const doneCount = queue.filter((item) => item.status === "done" && !item.saved).length;
+  const canSave = doneCount > 0 && !busy && !saving;
+
+  const loadDrive = async () => {
+    const url = driveUrl.trim();
+    if (!url || driveLoading) return;
+    setLocalError("");
+    setDriveLoading(true);
+    try {
+      await onImportDrive(url);
+      setDriveUrl("");
+    } catch (error) {
+      setLocalError(error instanceof Error ? error.message : "Could not load Google Drive files.");
+    } finally {
+      setDriveLoading(false);
+    }
+  };
 
   const validate = (file: File) => {
     const ext = extensionOf(file.name);
@@ -313,6 +347,25 @@ export const UploadPanel = ({
               Paste Clipboard Image / URL
             </button>
           </div>
+          <form
+            className="ingest-drive"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void loadDrive();
+            }}
+          >
+            <input
+              type="url"
+              value={driveUrl}
+              onChange={(event) => setDriveUrl(event.target.value)}
+              placeholder="Paste a Google Drive folder or file link"
+              aria-label="Google Drive link"
+              disabled={driveLoading}
+            />
+            <button type="submit" className="ingest-secondary" disabled={!driveUrl.trim() || driveLoading}>
+              {driveLoading ? "Loading Drive…" : "Load from Drive"}
+            </button>
+          </form>
           <div className="ingest-samples">
             {SAMPLE_CHIPS.map((name) => (
               <button
@@ -328,6 +381,28 @@ export const UploadPanel = ({
           </div>
         </div>
       ) : null}
+
+      {queue.length > 0 && (
+        <form
+          className="ingest-drive queue"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void loadDrive();
+          }}
+        >
+          <input
+            type="url"
+            value={driveUrl}
+            onChange={(event) => setDriveUrl(event.target.value)}
+            placeholder="Paste a Google Drive folder or file link"
+            aria-label="Google Drive link"
+            disabled={driveLoading}
+          />
+          <button type="submit" className="ingest-secondary" disabled={!driveUrl.trim() || driveLoading}>
+            {driveLoading ? "Loading Drive…" : "Load from Drive"}
+          </button>
+        </form>
+      )}
       <input
         ref={fileRef}
         type="file"
@@ -361,6 +436,16 @@ export const UploadPanel = ({
               >
                 Extract All
               </button>
+              {doneCount > 0 && (
+                <button
+                  type="button"
+                  className="ingest-browse"
+                  disabled={!canSave}
+                  onClick={onSave}
+                >
+                  {saving ? "Saving…" : `Save${doneCount > 1 ? ` (${doneCount})` : ""}`}
+                </button>
+              )}
               <button
                 type="button"
                 className="ingest-add-files"
@@ -378,7 +463,7 @@ export const UploadPanel = ({
               <li key={item.id} className={`ingest-queue-row status-${item.status}`}>
                 <div className="ingest-queue-file">
                   <span className="ingest-queue-mark" aria-hidden="true">
-                    {extensionOf(item.file.name).replace(".", "").slice(0, 3).toUpperCase() || "DOC"}
+                    <DocTypeIcon fileName={item.file.name} size={28} />
                   </span>
                   <div>
                     <strong>{item.file.name}</strong>
@@ -399,9 +484,12 @@ export const UploadPanel = ({
                     </div>
                   )}
                   {item.status === "done" && (
-                    <span className="ingest-pill done">
-                      ✓ {item.fieldCount ?? 0} fields extracted
-                      {item.confidence != null ? `, ${item.confidence}% confidence` : ""}
+                    <span className={`ingest-pill done${item.saved ? " saved" : ""}`}>
+                      {item.saved
+                        ? "Saved to Documents"
+                        : `✓ ${item.fieldCount ?? 0} fields extracted${
+                            item.confidence != null ? `, ${item.confidence}% confidence` : ""
+                          }`}
                     </span>
                   )}
                   {item.status === "error" && (

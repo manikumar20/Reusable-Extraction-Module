@@ -14,14 +14,6 @@ import {
   type TemplateSummary,
 } from "./types";
 
-const categorySubtitle = (category: string) => {
-  if (category === "Finance") return "Finance & Accounts Payable";
-  if (category === "HR") return "HR & People Ops";
-  if (category === "Legal") return "Legal & Contracts";
-  if (category === "Identity") return "Healthcare & Labs";
-  return category;
-};
-
 const isDefaultTemplate = (name: string) =>
   name === "Default Line Fields" || name === "Default template";
 
@@ -84,10 +76,7 @@ export const TemplatesPage = () => {
     return templates.filter((template) => {
       if (active && template.id === active.id) return false;
       if (!needle) return true;
-      return (
-        template.name.toLowerCase().includes(needle) ||
-        template.category.toLowerCase().includes(needle)
-      );
+      return template.name.toLowerCase().includes(needle);
     });
   }, [templates, active, query]);
 
@@ -147,10 +136,9 @@ export const TemplatesPage = () => {
             <div className="hub-hero-title-row">
               <span className="hub-hero-dot" aria-hidden="true" />
               <h2>
-                {active.name} <span className="hub-hero-ver">v{active.version}</span>
+                {active.name}
               </h2>
               {isDefaultTemplate(active.name) && <span className="hub-default-tag">Built-in</span>}
-              <span className="hub-hero-sub-inline">{categorySubtitle(active.category)}</span>
             </div>
             <div className="hub-hero-meta">
               <span>{active.fields.length} fields</span>
@@ -180,9 +168,6 @@ export const TemplatesPage = () => {
               onClick={() => navigate(`/templates/${active.id}/edit`)}
             >
               Edit
-            </button>
-            <button type="button" className="hub-btn-ghost" onClick={() => navigate("/")}>
-              Test
             </button>
             <button
               type="button"
@@ -265,13 +250,9 @@ export const TemplatesPage = () => {
                       <span className="hub-card-mark" aria-hidden="true">
                         {template.name.slice(0, 1).toUpperCase()}
                       </span>
-                      <div>
-                        <h4>{template.name}</h4>
-                        <p>{categorySubtitle(template.category)}</p>
-                      </div>
+                      <h4>{template.name}</h4>
                     </div>
                     <div className="hub-card-stats">
-                      <span>v{template.version}</span>
                       <span>{template.fields.length} fields</span>
                       {fieldMix(template).header > 0 && <span>{fieldMix(template).header} header</span>}
                       {fieldMix(template).line > 0 && <span>{fieldMix(template).line} line</span>}

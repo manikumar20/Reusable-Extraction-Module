@@ -14,8 +14,10 @@ import {
 import { DocumentStage } from "./DocumentStage";
 import { FieldList } from "./FieldList";
 import {
+  fieldsFromCatalogSeed,
   fieldsFromSuggestions,
   newTemplateField,
+  uniqueFieldsByName,
   type SourceDocument,
 } from "./matching";
 import "./templates.css";
@@ -44,7 +46,6 @@ export const TemplateBuilderPage = () => {
   const incoming = location.state as { sample?: File; files?: File[]; name?: string } | null;
   const [name, setName] = useState(incoming?.name?.trim() || "Untitled template");
   const [category, setCategory] = useState<TemplateCategory>("Finance");
-  const [version, setVersion] = useState(1);
   const [fields, setFields] = useState<TemplateField[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [documents, setDocuments] = useState<SourceDocument[]>([]);
@@ -77,10 +78,10 @@ export const TemplateBuilderPage = () => {
             !(field.catalogKey && dismissed.current.has(field.catalogKey)),
         );
         const seedIds = new Set(seed.map((field) => field.id));
-        const fallback = [
+        const fallback = uniqueFieldsByName([
           ...seed,
           ...keptCustoms.filter((field) => !seedIds.has(field.id)),
-        ];
+        ]);
         setSelectedId((currentId) =>
           currentId && fallback.some((field) => field.id === currentId)
             ? currentId
@@ -100,17 +101,19 @@ export const TemplateBuilderPage = () => {
         catalog.current,
         headerCatalogKeys.current,
       );
-      const merged = next.map((field) => {
-        if (!field.catalogKey) return field;
-        const existing = priorMatched.get(field.catalogKey);
-        if (!existing) return field;
-        return {
-          ...field,
-          sampleBox: existing.sampleBox,
-          sampleValue: field.sampleValue ?? existing.sampleValue,
-          name: existing.name || field.name,
-        };
-      });
+      const merged = uniqueFieldsByName(
+        next.map((field) => {
+          if (!field.catalogKey) return field;
+          const existing = priorMatched.get(field.catalogKey);
+          if (!existing) return field;
+          return {
+            ...field,
+            sampleBox: existing.sampleBox,
+            sampleValue: field.sampleValue ?? existing.sampleValue,
+            name: existing.name || field.name,
+          };
+        }),
+      );
       setSelectedId((currentId) =>
         currentId && merged.some((field) => field.id === currentId) ? currentId : (merged[0]?.id ?? null),
       );
@@ -156,7 +159,7 @@ export const TemplateBuilderPage = () => {
         !dismissed.current.has(field.id) &&
         !customIds.has(field.id),
     );
-    return [...byKey.values(), ...customs, ...seedCustoms];
+    return uniqueFieldsByName([...byKey.values(), ...customs, ...seedCustoms]);
   };
 
   const extractFile = async (document: SourceDocument) => {
@@ -274,7 +277,16 @@ export const TemplateBuilderPage = () => {
         if (cancelled) return;
         catalog.current = fieldsFromCatalog.all;
         headerCatalogKeys.current = new Set(fieldsFromCatalog.header.map((field) => field.key));
-        // Re-apply suggestions once the catalogue arrives (suggest can finish first).
+        // New templates start with catalogue defaults already in "In your schema".
+        if (!id && seedFields.current.length === 0) {
+          const seeded = fieldsFromCatalogSeed(fieldsFromCatalog.header, fieldsFromCatalog.lines, {
+            defaultsOnly: true,
+          });
+          seedFields.current = seeded;
+          setFields(seeded);
+          setSelectedId(seeded[0]?.id ?? null);
+        }
+        // Re-apply suggestions once the catalogue arrives so matched DB fields land in schema.
         if (documentsRef.current.some((document) => document.status === "ready" && document.suggestions)) {
           rebuildForFile(documentsRef.current, activeId ?? documentsRef.current[0]?.id ?? null);
         }
@@ -285,6 +297,15 @@ export const TemplateBuilderPage = () => {
     };
   }, []);
 
+  // Keep left-panel fields in sync when a sample finishes extracting.
+  useEffect(() => {
+    documentsRef.current = documents;
+    const focus = documents.find((document) => document.id === activeId);
+    if (focus?.status === "ready" && focus.suggestions && catalog.current.length) {
+      rebuildForFile(documents, activeId);
+    }
+  }, [documents, activeId]);
+
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
@@ -294,7 +315,6 @@ export const TemplateBuilderPage = () => {
         if (cancelled) return;
         setName(template.name);
         setCategory(template.category);
-        setVersion(template.version);
         seedFields.current = template.fields;
         setFields(template.fields);
         setSelectedId(template.fields[0]?.id ?? null);
@@ -378,11 +398,54 @@ export const TemplateBuilderPage = () => {
     setSelectedId(field.id);
   };
 
+  const acceptSuggested = (fieldId: string) => {
+    setFields((current) =>
+      current.map((field) => {
+        if (field.id !== fieldId || !field.suggested) return field;
+        const catalogField = catalog.current.find(
+          (entry) =>
+            entry.key === field.id ||
+            entry.label.toLowerCase() === field.name.trim().toLowerCase(),
+        );
+        return {
+          ...field,
+          suggested: false,
+          catalogKey: catalogField?.key,
+          name: catalogField?.label || field.name,
+          hint: catalogField?.description || field.hint,
+          type: catalogField ? field.type : field.type,
+          level: catalogField
+            ? headerCatalogKeys.current.has(catalogField.key)
+              ? "header"
+              : "line"
+            : field.level,
+        };
+      }),
+    );
+  };
+
   const acceptAllSuggested = () => {
     setFields((current) =>
-      current.map((field) =>
-        field.suggested ? { ...field, suggested: false, catalogKey: undefined } : field,
-      ),
+      current.map((field) => {
+        if (!field.suggested) return field;
+        const catalogField = catalog.current.find(
+          (entry) =>
+            entry.key === field.id ||
+            entry.label.toLowerCase() === field.name.trim().toLowerCase(),
+        );
+        return {
+          ...field,
+          suggested: false,
+          catalogKey: catalogField?.key,
+          name: catalogField?.label || field.name,
+          hint: catalogField?.description || field.hint,
+          level: catalogField
+            ? headerCatalogKeys.current.has(catalogField.key)
+              ? "header"
+              : "line"
+            : field.level,
+        };
+      }),
     );
   };
 
@@ -407,7 +470,6 @@ export const TemplateBuilderPage = () => {
               onChange={(event) => setName(event.target.value)}
             />
           </nav>
-          <span className="tm-version">v{version}.0</span>
           <span className="tm-badge tm-badge-active">Draft</span>
           {isExtracting && (
             <span className="tm-extracting-pill" title="Processing files simultaneously">
@@ -436,15 +498,7 @@ export const TemplateBuilderPage = () => {
             documents.find((document) => document.id === activeId)?.status === "reading",
           )}
           onSelect={setSelectedId}
-          onAccept={(fieldId) =>
-            setFields((current) =>
-              current.map((field) =>
-                field.id === fieldId
-                  ? { ...field, suggested: false, catalogKey: undefined }
-                  : field,
-              ),
-            )
-          }
+          onAccept={acceptSuggested}
           onAcceptAll={acceptAllSuggested}
           onReject={(fieldId) => {
             const removed = fields.find((field) => field.id === fieldId);

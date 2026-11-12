@@ -1,11 +1,29 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { jobFromDocument } from "./jobFromDocument";
 import { Results } from "./Results";
 import { apiUrl } from "./services/api";
+import { downloadDriveFile, listDriveFiles } from "./services/drive";
 import { activateTemplate, getActiveTemplate, getTemplate, listTemplates } from "./templates/api";
 import { rememberTemplate, type Template, type TemplateSummary } from "./templates/types";
-import type { Catalog, ServerConfig, StoredDocument } from "./types";
+import type { Catalog, ExtractedFieldRow, Job, ServerConfig, StoredDocument } from "./types";
 import { UploadPanel, type QueueItem } from "./UploadPanel";
 import { useJob } from "./useJob";
+
+const fallbackJob = (item: QueueItem): Job => ({
+  id: item.jobId || `queue-${item.id}`,
+  fileName: item.file.name,
+  status: "done",
+  phase: "done",
+  progress: 100,
+  header: {},
+  lines: [],
+  usage: { inputTokens: 0, outputTokens: 0 },
+  headerUsage: { inputTokens: 0, outputTokens: 0 },
+  lineCostUsd: 0,
+  headerCostUsd: 0,
+  template: null,
+  error: null,
+});
 
 export const ExtractPage = () => {
   const [config, setConfig] = useState<ServerConfig | null>(null);
@@ -21,11 +39,17 @@ export const ExtractPage = () => {
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [batchMode, setBatchMode] = useState(false);
   const [inspecting, setInspecting] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [inspectFields, setInspectFields] = useState<ExtractedFieldRow[]>([]);
+  const [inspectDocumentId, setInspectDocumentId] = useState<number | null>(null);
+  const [inspectJobSnapshot, setInspectJobSnapshot] = useState<Job | null>(null);
   const { job, liveError } = useJob(jobId);
   const runningId = useRef<string | null>(null);
   const chain = useRef<string[]>([]);
   const queueRef = useRef(queue);
   const templateRef = useRef(activeTemplate);
+  const jobRef = useRef(job);
+  const documentsRef = useRef(documents);
 
   useEffect(() => {
     queueRef.current = queue;
@@ -34,6 +58,14 @@ export const ExtractPage = () => {
   useEffect(() => {
     templateRef.current = activeTemplate;
   }, [activeTemplate]);
+
+  useEffect(() => {
+    jobRef.current = job;
+  }, [job]);
+
+  useEffect(() => {
+    documentsRef.current = documents;
+  }, [documents]);
 
   const loadDocuments = useCallback(async () => {
     try {
@@ -70,25 +102,27 @@ export const ExtractPage = () => {
           getActiveTemplate().catch(() => null),
           listTemplates({ category: "All", query: "" }).catch(() => [] as TemplateSummary[]),
         ]);
-        if (!configResponse.ok || !catalogResponse.ok) throw new Error("unavailable");
-        if (!cancelled) {
+        if (cancelled) return;
+        if (configResponse.ok) {
           setConfig((await configResponse.json()) as ServerConfig);
-          setCatalog((await catalogResponse.json()) as Catalog);
-          setTemplates(rows);
-          if (active) {
-            rememberTemplate(active);
-            setActiveTemplate(active);
-          } else {
-            setActiveTemplate(null);
-          }
-          void loadDocuments();
           setOffline(false);
+        } else {
+          setOffline(true);
         }
+        if (catalogResponse.ok) {
+          setCatalog((await catalogResponse.json()) as Catalog);
+        }
+        if (active) {
+          rememberTemplate(active);
+          setActiveTemplate(active);
+        }
+        setTemplates(rows);
       } catch {
         if (!cancelled) setOffline(true);
       }
     };
     void load();
+    void loadDocuments();
     return () => {
       cancelled = true;
     };
@@ -142,6 +176,7 @@ export const ExtractPage = () => {
         const response = await fetch(apiUrl("/extract"), { method: "POST", body });
         const payload = (await response.json().catch(() => null)) as {
           id?: string;
+          document?: { id?: number };
           error?: { message?: string };
         } | null;
         if (!response.ok || !payload?.id) {
@@ -150,7 +185,16 @@ export const ExtractPage = () => {
         void loadDocuments();
         setJobId(payload.id);
         setQueue((current) =>
-          current.map((row) => (row.id === itemId ? { ...row, jobId: payload.id } : row)),
+          current.map((row) =>
+            row.id === itemId
+              ? {
+                  ...row,
+                  jobId: payload.id,
+                  documentId:
+                    typeof payload.document?.id === "number" ? payload.document.id : row.documentId,
+                }
+              : row,
+          ),
         );
       } catch (error) {
         runningId.current = null;
@@ -189,6 +233,7 @@ export const ExtractPage = () => {
       }).length;
       const fieldCount = filledHeader + job.lines.length;
       const confidence = Math.min(99, 90 + Math.min(fieldCount, 9));
+      const result = structuredClone(job);
       setQueue((current) =>
         current.map((item) =>
           item.id === itemId
@@ -199,6 +244,7 @@ export const ExtractPage = () => {
                 jobId: job.id,
                 fieldCount,
                 confidence,
+                result,
               }
             : item,
         ),
@@ -207,6 +253,7 @@ export const ExtractPage = () => {
       setUploading(false);
       const nextId = chain.current.shift();
       if (nextId) void startExtract(nextId);
+      else void loadDocuments();
       return;
     }
     if (job.status === "error") {
@@ -226,7 +273,172 @@ export const ExtractPage = () => {
       const nextId = chain.current.shift();
       if (nextId) void startExtract(nextId);
     }
-  }, [job, startExtract]);
+  }, [job, loadDocuments, startExtract]);
+
+  const saveToDocuments = useCallback(async () => {
+    const ids = queueRef.current
+      .filter(
+        (item) => item.status === "done" && !item.saved && typeof item.documentId === "number",
+      )
+      .map((item) => item.documentId as number);
+    if (!ids.length) {
+      setUploadError("Extract the files, then save them to Documents.");
+      return;
+    }
+    setSaving(true);
+    setUploadError("");
+    try {
+      const response = await fetch(apiUrl("/documents/save"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      });
+      if (!response.ok) throw new Error("Documents could not be saved.");
+      setQueue((current) =>
+        current.map((item) =>
+          item.status === "done" && item.documentId != null && ids.includes(item.documentId)
+            ? { ...item, saved: true }
+            : item,
+        ),
+      );
+      await loadDocuments();
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : "Documents could not be saved.");
+    } finally {
+      setSaving(false);
+    }
+  }, [loadDocuments]);
+
+  const importFromDrive = useCallback(async (url: string) => {
+    setUploadError("");
+    const listed = await listDriveFiles(url);
+    if (!listed.files.length) {
+      setUploadError("No files found for that Drive link.");
+      return;
+    }
+    const files: File[] = [];
+    const failures: string[] = [];
+    for (const entry of listed.files) {
+      try {
+        files.push(await downloadDriveFile(entry));
+      } catch (error) {
+        failures.push(
+          `${entry.name}: ${error instanceof Error ? error.message : "download failed"}`,
+        );
+      }
+    }
+    setQueue((current) => [
+      ...current,
+      ...files.map((file) => ({
+        id: crypto.randomUUID(),
+        file,
+        status: "ready" as const,
+        progress: 0,
+      })),
+    ]);
+    if (failures.length) {
+      setUploadError(`Loaded ${files.length} file(s). Skipped: ${failures.join("; ")}`);
+    }
+  }, []);
+
+  const closeInspect = useCallback(() => {
+    setInspecting(false);
+    setInspectFields([]);
+    setInspectDocumentId(null);
+    setInspectJobSnapshot(null);
+    void loadDocuments();
+  }, [loadDocuments]);
+
+  /** Open Inspect Results immediately from the queue item — no waiting on PDF/network. */
+  const openInspect = useCallback((itemId: string) => {
+    const item = queueRef.current.find((row) => row.id === itemId);
+    if (!item) return;
+    if (item.status !== "done" && !item.jobId && item.documentId == null) return;
+
+    setUploadError("");
+    setInspectFields([]);
+
+    const live =
+      jobRef.current && item.jobId && jobRef.current.id === item.jobId ? jobRef.current : null;
+    const snapshot = item.result ?? live ?? fallbackJob(item);
+    setInspectJobSnapshot(snapshot);
+    setPreviewFile(item.file);
+    if (item.jobId) setJobId(item.jobId);
+
+    const docs = documentsRef.current;
+    const matched =
+      (item.documentId != null ? docs.find((document) => document.id === item.documentId) : null) ||
+      docs.find(
+        (document) =>
+          document.fileName === item.file.name &&
+          (document.status || "").toLowerCase() === "completed",
+      ) ||
+      null;
+    const documentId = item.documentId ?? matched?.id ?? null;
+    setInspectDocumentId(documentId);
+
+    // Show Results now — network enrichment happens after paint.
+    setInspecting(true);
+
+    void (async () => {
+      try {
+        let resolvedId = documentId;
+        if (resolvedId == null) {
+          await loadDocuments();
+          const latest = await fetch(apiUrl("/documents"))
+            .then(async (response) =>
+              response.ok ? ((await response.json()) as { documents?: StoredDocument[] }) : null,
+            )
+            .catch(() => null);
+          const found = (latest?.documents ?? []).find(
+            (document) =>
+              document.fileName === item.file.name &&
+              (document.status || "").toLowerCase() === "completed",
+          );
+          resolvedId = found?.id ?? null;
+          if (resolvedId != null) setInspectDocumentId(resolvedId);
+        }
+
+        if (!item.result && item.jobId && !live) {
+          const response = await fetch(apiUrl(`/extract/${item.jobId}`));
+          if (response.ok) {
+            const payload = (await response.json()) as Job;
+            if (payload?.id) {
+              setInspectJobSnapshot(payload);
+              setQueue((current) =>
+                current.map((row) => (row.id === itemId ? { ...row, result: payload } : row)),
+              );
+            }
+          }
+        }
+
+        if (resolvedId == null) return;
+
+        if (item.documentId == null) {
+          setQueue((current) =>
+            current.map((row) => (row.id === itemId ? { ...row, documentId: resolvedId! } : row)),
+          );
+        }
+
+        for (let attempt = 0; attempt < 6; attempt += 1) {
+          const fieldsResponse = await fetch(apiUrl(`/documents/${resolvedId}/fields`));
+          if (fieldsResponse.ok) {
+            const payload = (await fieldsResponse.json()) as { fields?: ExtractedFieldRow[] };
+            const rows = payload.fields ?? [];
+            if (rows.length || attempt === 5) {
+              setInspectFields(rows);
+              break;
+            }
+          }
+          await new Promise((resolve) => window.setTimeout(resolve, 500));
+        }
+      } catch (error) {
+        setUploadError(
+          error instanceof Error ? error.message : "Could not load saved fields for this document.",
+        );
+      }
+    })();
+  }, [loadDocuments]);
 
   const onSelectTemplate = async (id: string) => {
     setUploadError("");
@@ -258,6 +470,31 @@ export const ExtractPage = () => {
       }
     : null;
 
+  const inspectDocument = useMemo(() => {
+    if (inspectDocumentId == null) return null;
+    return (
+      documents.find((document) => document.id === inspectDocumentId) ??
+      ({
+        id: inspectDocumentId,
+        fileName: previewFile?.name || inspectJobSnapshot?.fileName || job?.fileName || "Document",
+        documentType: "Document",
+        mimeType: previewFile?.type || "application/octet-stream",
+        uploadedAt: new Date().toISOString(),
+        status: "Completed",
+      } satisfies StoredDocument)
+    );
+  }, [documents, inspectDocumentId, inspectJobSnapshot?.fileName, job?.fileName, previewFile]);
+
+  const reviewJob = useMemo(() => {
+    if (inspectFields.length > 0 && inspectDocument) {
+      return jobFromDocument(inspectDocument, inspectFields);
+    }
+    if (inspectJobSnapshot) return inspectJobSnapshot;
+    if (job) return job;
+    if (inspectDocument) return jobFromDocument(inspectDocument, inspectFields);
+    return null;
+  }, [inspectDocument, inspectFields, inspectJobSnapshot, job]);
+
   return (
     <main
       className={
@@ -283,6 +520,7 @@ export const ExtractPage = () => {
           templates={templates}
           queue={queue}
           batchMode={batchMode}
+          saving={saving}
           onBatchModeChange={setBatchMode}
           onSelectTemplate={(id) => void onSelectTemplate(id)}
           onAddFiles={(files) => {
@@ -308,29 +546,39 @@ export const ExtractPage = () => {
             chain.current = rest;
             if (first) void startExtract(first);
           }}
-          onInspect={(itemId) => {
-            const item = queue.find((row) => row.id === itemId);
-            if (!item?.jobId) return;
-            setPreviewFile(item.file);
-            setJobId(item.jobId);
-            setInspecting(true);
-          }}
+          onSave={() => void saveToDocuments()}
+          onImportDrive={importFromDrive}
+          onInspect={openInspect}
           onRemove={(itemId) => {
             setQueue((current) => current.filter((item) => item.id !== itemId));
           }}
         />
       )}
 
-      {inspecting && job && (
+      {inspecting && reviewJob && (
         <Results
           catalog={catalog}
-          job={job}
+          job={reviewJob}
           documents={documents}
           previewFile={previewFile}
+          documentId={inspectDocumentId}
+          persistedFields={inspectFields}
+          onFieldsChanged={() => void loadDocuments()}
           backLabel="Back to Ingest Queue"
-          onBack={() => setInspecting(false)}
-          onNextDocument={() => setInspecting(false)}
+          onBack={closeInspect}
+          onNextDocument={closeInspect}
         />
+      )}
+
+      {inspecting && !reviewJob && (
+        <div className="stand" style={{ display: "grid", gap: 12, maxWidth: 420 }}>
+          <p className="error-text" role="alert">
+            Could not open Inspect Results for this file.
+          </p>
+          <button type="button" className="app-btn-ghost" onClick={closeInspect}>
+            Back to Ingest Queue
+          </button>
+        </div>
       )}
     </main>
   );

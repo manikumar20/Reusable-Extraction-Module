@@ -178,6 +178,22 @@ export const updateDocumentStatus = async (documentId: number, status: string) =
   await getPool().query(`UPDATE documents SET status = $2 WHERE id = $1`, [documentId, status]);
 };
 
+/** Move extracted files into the Documents library. Unsaved rows stay hidden. */
+export const publishDocuments = async (ids: number[]) => {
+  const unique = [...new Set(ids.filter((id) => Number.isInteger(id) && id > 0))];
+  if (!unique.length) return [];
+  const { rows } = await getPool().query<{ id: number }>(
+    `
+      UPDATE documents
+      SET status = 'Completed'
+      WHERE id = ANY($1::int[])
+      RETURNING id
+    `,
+    [unique],
+  );
+  return rows.map((row) => Number(row.id));
+};
+
 export const listDocuments = async (): Promise<StoredDocument[]> => {
   const { rows } = await getPool().query<DocumentRow>(
     `
@@ -196,6 +212,7 @@ export const listDocuments = async (): Promise<StoredDocument[]> => {
              ) AS fields
       FROM documents d
       LEFT JOIN extracted_fields f ON f.document_id = d.id
+      WHERE d.status = 'Completed'
       GROUP BY d.id
       ORDER BY d.uploaded_at DESC, d.id DESC
     `,
@@ -221,17 +238,88 @@ export const updateExtractedField = async (
   documentId: number,
   fieldId: string,
   fieldValue: string,
+  fieldName?: string,
 ) => {
   const { rows } = await getPool().query<FieldRow>(
-    `
-      UPDATE extracted_fields
-      SET field_value = $3, source = 'MANUAL', updated_at = NOW()
-      WHERE document_id = $1 AND id = $2
-      RETURNING id, document_id, field_name, field_key, field_value, data_type, source, created_at, updated_at
-    `,
-    [documentId, fieldId, fieldValue],
+    fieldName == null
+      ? `
+          UPDATE extracted_fields
+          SET field_value = $3, source = 'MANUAL', updated_at = NOW()
+          WHERE document_id = $1 AND id = $2
+          RETURNING id, document_id, field_name, field_key, field_value, data_type, source, created_at, updated_at
+        `
+      : `
+          UPDATE extracted_fields
+          SET field_value = $3, field_name = $4, source = 'MANUAL', updated_at = NOW()
+          WHERE document_id = $1 AND id = $2
+          RETURNING id, document_id, field_name, field_key, field_value, data_type, source, created_at, updated_at
+        `,
+    fieldName == null
+      ? [documentId, fieldId, fieldValue]
+      : [documentId, fieldId, fieldValue, fieldName],
   );
   return rows[0] ? mapField(rows[0]) : null;
+};
+
+export const createExtractedField = async (input: {
+  documentId: number;
+  fieldName: string;
+  fieldKey?: string;
+  fieldValue?: string;
+  dataType?: string;
+  source?: string;
+}): Promise<ExtractedField | null> => {
+  const found = await getPool().query(`SELECT 1 FROM documents WHERE id = $1`, [input.documentId]);
+  if (!found.rowCount) return null;
+  const fieldName = input.fieldName.trim() || "New field";
+  const fieldKey =
+    input.fieldKey?.trim() ||
+    `manual_${fieldName.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "") || "field"}`;
+  const { rows } = await getPool().query<FieldRow>(
+    `
+      INSERT INTO extracted_fields
+        (id, document_id, field_name, field_key, field_value, data_type, source)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      RETURNING id, document_id, field_name, field_key, field_value, data_type, source, created_at, updated_at
+    `,
+    [
+      randomUUID(),
+      input.documentId,
+      fieldName.slice(0, 200),
+      fieldKey.slice(0, 120),
+      input.fieldValue ?? "",
+      input.dataType?.trim() || "STRING",
+      (input.source || "MANUAL").toUpperCase(),
+    ],
+  );
+  return rows[0] ? mapField(rows[0]) : null;
+};
+
+export const deleteExtractedField = async (documentId: number, fieldId: string) => {
+  const { rowCount } = await getPool().query(
+    `DELETE FROM extracted_fields WHERE document_id = $1 AND id = $2`,
+    [documentId, fieldId],
+  );
+  return (rowCount ?? 0) > 0;
+};
+
+export const getDocumentFileMeta = async (documentId: number) => {
+  const { rows } = await getPool().query<{
+    file_name: string;
+    stored_name: string;
+    mime_type: string;
+  }>(
+    `SELECT file_name, stored_name, mime_type FROM documents WHERE id = $1`,
+    [documentId],
+  );
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    fileName: row.file_name,
+    storedName: row.stored_name,
+    mimeType: row.mime_type || "application/octet-stream",
+    filePath: path.join(uploadDir, path.basename(row.stored_name)),
+  };
 };
 
 export const deleteDocument = async (documentId: number): Promise<boolean> => {
@@ -285,7 +373,14 @@ export const saveExtractedFields = async (input: {
         await insertField(`${fieldKey}#${lineIndex + 1}`, fieldValue);
       }
     }
-    await client.query(`UPDATE documents SET status = 'Completed' WHERE id = $1`, [input.documentId]);
+    await client.query(
+      `
+        UPDATE documents
+        SET status = CASE WHEN status = 'Completed' THEN 'Completed' ELSE 'Ready' END
+        WHERE id = $1
+      `,
+      [input.documentId],
+    );
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");

@@ -65,9 +65,10 @@ export const env = {
   /** Always from config/.env — never from .env.example. */
   anthropicApiKey: optional("ANTHROPIC_API_KEY"),
   anthropicAuthToken: optional("ANTHROPIC_AUTH_TOKEN"),
+  googleDriveApiKey: optional("GOOGLE_DRIVE_API_KEY") || optional("GOOGLE_API_KEY"),
   isProduction: required("NODE_ENV") === "production",
 } as const;
 
 console.info(
-  `Env loaded from ${ENV_FILE} (ANTHROPIC_API_KEY ${env.anthropicApiKey ? "set" : "missing"})`,
+  `Env loaded from ${ENV_FILE} (ANTHROPIC_API_KEY ${env.anthropicApiKey ? "set" : "missing"}, GOOGLE_DRIVE_API_KEY ${env.googleDriveApiKey ? "set" : "missing"})`,
 );

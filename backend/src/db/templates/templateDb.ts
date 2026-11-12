@@ -93,12 +93,7 @@ export const setActiveTemplate = async (templateId: string | null): Promise<Temp
         `
           UPDATE template_versions
           SET is_active = TRUE, updated_at = NOW()
-          WHERE id = (
-            SELECT id FROM template_versions
-            WHERE template_id = $1
-            ORDER BY version DESC
-            LIMIT 1
-          )
+          WHERE template_id = $1
         `,
         [templateId],
       );
@@ -224,14 +219,13 @@ const toTemplate = (row: VersionRow, fields: TemplateField[]): Template => ({
 });
 
 const insertFields = async (
-  versionId: string,
+  rowId: string,
   fields: FieldInput[],
   query: (text: string, values: unknown[]) => Promise<unknown>,
 ) => {
   for (const [index, field] of fields.entries()) {
     const box = field.sampleBox;
-    // Always mint a new field id — ids are globally unique, and each save
-    // creates a new template version that must not reuse prior field pkeys.
+    // Prefer the client field id when present so edits stay stable; otherwise mint one.
     await query(
       `
         INSERT INTO template_fields (
@@ -242,8 +236,8 @@ const insertFields = async (
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
       `,
       [
-        randomUUID(),
-        versionId,
+        field.id?.trim() || randomUUID(),
+        rowId,
         index,
         field.name,
         field.type,
@@ -280,12 +274,7 @@ export const listTemplates = async (filter: {
   const { rows } = await getPool().query<VersionRow>(
     `
       SELECT id, template_id, name, version, category, created_at, updated_at
-      FROM (
-        SELECT DISTINCT ON (template_id)
-          id, template_id, name, version, category, created_at, updated_at
-        FROM template_versions
-        ORDER BY template_id, version DESC
-      ) latest
+      FROM template_versions
       ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
       ORDER BY updated_at DESC, name ASC
     `,
@@ -308,7 +297,6 @@ export const getTemplate = async (templateId: string): Promise<Template | null> 
       SELECT id, template_id, name, version, category, created_at, updated_at
       FROM template_versions
       WHERE template_id = $1
-      ORDER BY version DESC
       LIMIT 1
     `,
     [templateId],
@@ -349,6 +337,7 @@ export const createTemplate = async (input: {
   return created;
 };
 
+/** Update the single mutable template row in place (no version history). */
 export const saveTemplateVersion = async (
   templateId: string,
   input: { name: string; category: TemplateCategory; fields: FieldInput[] },
@@ -356,40 +345,30 @@ export const saveTemplateVersion = async (
   const client = await getPool().connect();
   try {
     await client.query("BEGIN");
-    const existing = await client.query<{ created_at: Date; version: number }>(
+    const existing = await client.query<{ id: string }>(
       `
-        SELECT created_at, version
+        SELECT id
         FROM template_versions
         WHERE template_id = $1
-        ORDER BY version ASC
+        LIMIT 1
       `,
       [templateId],
     );
-    if (!existing.rows.length) {
+    const rowId = existing.rows[0]?.id;
+    if (!rowId) {
       await client.query("ROLLBACK");
       return null;
     }
-    const nextVersion = Math.max(...existing.rows.map((row) => row.version)) + 1;
-    const createdAt = existing.rows[0]?.created_at;
-    const active = await client.query(
-      `SELECT 1 FROM template_versions WHERE template_id = $1 AND is_active LIMIT 1`,
-      [templateId],
-    );
-    if (active.rows.length) {
-      await client.query(
-        `UPDATE template_versions SET is_active = FALSE WHERE template_id = $1 AND is_active`,
-        [templateId],
-      );
-    }
-    const versionId = randomUUID();
     await client.query(
       `
-        INSERT INTO template_versions (id, template_id, name, version, category, is_active, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+        UPDATE template_versions
+        SET name = $2, category = $3, version = 1, updated_at = NOW()
+        WHERE template_id = $1
       `,
-      [versionId, templateId, input.name, nextVersion, input.category, active.rows.length > 0, createdAt],
+      [templateId, input.name, input.category],
     );
-    await insertFields(versionId, input.fields, (text, values) => client.query(text, values));
+    await client.query(`DELETE FROM template_fields WHERE template_version_id = $1`, [rowId]);
+    await insertFields(rowId, input.fields, (text, values) => client.query(text, values));
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");

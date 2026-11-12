@@ -167,17 +167,28 @@ export const extractDocument = async (
   }
 
   // Images are vision-only — never run office/PDF text parsers on them.
-  const officeText = isImage
-    ? ""
-    : ext === ".txt"
-      ? buffer.toString("utf8")
-      : ext === ".pdf"
-        ? (
-            await pdfRowText(buffer, async (done, total) => {
-              await report((done / Math.max(total, 1)) * READ_SHARE);
-            })
-          ).text
-        : await officePlainText(buffer, ext);
+  let officeText = "";
+  if (isImage) {
+    officeText = "";
+  } else if (ext === ".txt") {
+    officeText = buffer.toString("utf8");
+  } else if (ext === ".pdf") {
+    try {
+      officeText = (
+        await pdfRowText(buffer, async (done, total) => {
+          await report((done / Math.max(total, 1)) * READ_SHARE);
+        })
+      ).text;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/password/i.test(message)) {
+        throw new ExtractionError(400, message, "PDF_PASSWORD_REQUIRED");
+      }
+      throw error;
+    }
+  } else {
+    officeText = await officePlainText(buffer, ext);
+  }
   if (ext !== ".pdf") await report(READ_SHARE);
   const sendText = !isImage && (ext !== ".pdf" || textIsUsable(officeText));
   // Chunk size depends on optional count only — defaults always come along.

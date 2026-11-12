@@ -6,6 +6,10 @@ import {
   handleGetExtractCatalog,
   handleGetExtractConfig,
 } from "../../controllers/extract/extractController.js";
+import {
+  handleDownloadDriveFile,
+  handleListDrive,
+} from "../../controllers/extract/driveController.js";
 import { asyncHandler } from "../../middleware/asyncHandler.js";
 import { uploadDocument } from "../../middleware/documentUpload.js";
 import { validate } from "../../validators/_shared/index.js";
@@ -15,6 +19,8 @@ export const extractRouter = Router();
 
 extractRouter.get("/config", asyncHandler(handleGetExtractConfig));
 extractRouter.get("/catalog", asyncHandler(handleGetExtractCatalog));
+extractRouter.post("/drive/list", asyncHandler(handleListDrive));
+extractRouter.get("/drive/file/:fileId", asyncHandler(handleDownloadDriveFile));
 
 extractRouter.post("/", uploadDocument.single("file"), asyncHandler(handleCreateExtract));
 

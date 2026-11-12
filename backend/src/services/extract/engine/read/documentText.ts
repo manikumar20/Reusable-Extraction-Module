@@ -292,11 +292,46 @@ type PdfJsTextItem = {
   height?: number;
 };
 
+const isPdfPasswordError = (error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const name = error instanceof Error ? error.name : "";
+  const code =
+    typeof error === "object" && error && "code" in error
+      ? Number((error as { code?: number }).code)
+      : NaN;
+  return (
+    name === "PasswordException" ||
+    code === 1 ||
+    code === 2 ||
+    /password/i.test(message)
+  );
+};
+
+const openPdfProxy = async (buffer: Buffer) => {
+  const data = new Uint8Array(buffer);
+  try {
+    // Empty password unlocks many “owner-password only” PDFs.
+    return await getDocumentProxy(data, { password: "" });
+  } catch (error) {
+    if (!isPdfPasswordError(error)) throw error;
+    try {
+      return await getDocumentProxy(data);
+    } catch (retryError) {
+      if (isPdfPasswordError(retryError) || isPdfPasswordError(error)) {
+        throw new Error(
+          "This PDF is password-protected. Remove the password and upload it again.",
+        );
+      }
+      throw retryError;
+    }
+  }
+};
+
 export const pdfRowText = async (
   buffer: Buffer,
   onPage?: (done: number, total: number) => Promise<void>,
 ) => {
-  const pdf = await getDocumentProxy(new Uint8Array(buffer));
+  const pdf = await openPdfProxy(buffer);
   try {
     const total = pdf.numPages;
     const pages: string[] = [];
@@ -326,6 +361,13 @@ export const pdfRowText = async (
       if (onPage) await onPage(pageNumber, total);
     }
     return { pageCount: total, text: pages.join("\n") };
+  } catch (error) {
+    if (isPdfPasswordError(error)) {
+      throw new Error(
+        "This PDF is password-protected. Remove the password and upload it again.",
+      );
+    }
+    throw error;
   } finally {
     // Release pdf.js workers/resources — skipping this makes later PDFs much slower.
     try {

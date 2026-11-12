@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { Request, Response } from "express";
+import { env } from "../../config/env.js";
 import { documentModel, recordModel } from "../../config/runtime.js";
 import { hasClaudeCredentials } from "../../services/extract/anthropicClient.js";
 import { insertDocument } from "../../db/documents/documentDb.js";
@@ -69,6 +70,7 @@ export const handleGetExtractConfig = async (_request: Request, response: Respon
     accept: ALLOWED_EXTENSIONS,
     maxUploadMb: MAX_UPLOAD_BYTES / (1024 * 1024),
     maxImageMb: MAX_IMAGE_BYTES / (1024 * 1024),
+    googleDrive: Boolean(env.googleDriveApiKey),
   });
 };
 

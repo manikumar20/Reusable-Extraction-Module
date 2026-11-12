@@ -38,6 +38,7 @@ export const createApp = () => {
       },
       methods: ["GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"],
       allowedHeaders: ["Content-Type", "Accept"],
+      exposedHeaders: ["Content-Disposition", "X-File-Name"],
       optionsSuccessStatus: HTTP_STATUS.NO_CONTENT,
     }),
   );

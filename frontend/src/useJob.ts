@@ -41,13 +41,22 @@ export const useJob = (jobId: string | null) => {
     const pollJob = async () => {
       try {
         const response = await fetch(apiUrl(`/extract/${jobId}`));
-        if (!response.ok) return;
+        if (!response.ok) {
+          if (response.status === 404) {
+            setLiveError("Extraction result is no longer available. Open it from Documents.");
+          }
+          return;
+        }
         const next = readJob(await response.text());
         if (next) apply(next);
       } catch {
         setLiveError("Cannot reach the extraction service.");
       }
     };
+
+    // Load current snapshot immediately so Inspect Results has header/lines
+    // even when the live stream has already finished.
+    void pollJob();
 
     source.addEventListener("job", (event) => {
       const next = readJob((event as MessageEvent<string>).data);

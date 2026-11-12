@@ -87,4 +87,14 @@ export type ServerConfig = {
   accept: string[];
   maxUploadMb: number;
   maxImageMb: number;
+  googleDrive?: boolean;
+};
+
+export type DriveListedFile = {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number | null;
+  exportMimeType?: string;
+  resourceKey?: string;
 };

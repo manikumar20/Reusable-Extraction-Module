@@ -1,4 +1,5 @@
 import { useState } from "react";
+import DocTypeIcon from "../components/DocTypeIcon";
 import { FALLBACK_ACCEPT } from "../format";
 import type { SourceDocument } from "./matching";
 
@@ -145,7 +146,7 @@ export const DocumentStage = ({
                 onDragStart={(event) => event.preventDefault()}
               >
                 <span className="tm-file-mark" aria-hidden="true">
-                  {document.file.name.split(".").pop()?.slice(0, 3).toUpperCase() || "FILE"}
+                  <DocTypeIcon fileName={document.file.name} size={28} />
                 </span>
                 <span className="tm-file-copy">
                   <span className="tm-file-name">{document.file.name}</span>

@@ -246,6 +246,9 @@ export const runJob = async (id: string, filePath: string, fileName: string) => 
     job.status = "done";
     job.phase = "done";
     job.progress = 100;
+    // Publish results immediately so Inspect Results can render fields
+    // without waiting for the document DB write.
+    notify(job);
     if (job.documentId != null) {
       await saveExtractedFields({
         documentId: job.documentId,
