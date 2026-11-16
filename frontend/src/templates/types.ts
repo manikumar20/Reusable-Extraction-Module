@@ -35,6 +35,7 @@ export type Template = {
   category: TemplateCategory;
   createdAt: string;
   updatedAt: string;
+  published: boolean;
   fields: TemplateField[];
 };
 

@@ -3,7 +3,6 @@ import { Link } from "react-router-dom";
 import DocTypeIcon from "./components/DocTypeIcon";
 import { extensionOf, FALLBACK_ACCEPT } from "./format";
 import type { Job, ServerConfig } from "./types";
-import type { TemplateSummary } from "./templates/types";
 
 export type QueueItem = {
   id: string;
@@ -26,13 +25,11 @@ type UploadPanelProps = {
   uploading: boolean;
   uploadError: string;
   liveError: string;
-  activeTemplate: TemplateSummary | null;
-  templates: TemplateSummary[];
+  activeTemplate: { name: string; version: number } | null;
   queue: QueueItem[];
   batchMode: boolean;
   saving?: boolean;
   onBatchModeChange: (value: boolean) => void;
-  onSelectTemplate: (id: string) => void;
   onAddFiles: (files: File[]) => void;
   onExtract: (itemId: string) => void;
   onExtractAll: () => void;
@@ -143,12 +140,10 @@ export const UploadPanel = ({
   uploadError,
   liveError,
   activeTemplate,
-  templates,
   queue,
   batchMode,
   saving = false,
   onBatchModeChange,
-  onSelectTemplate,
   onAddFiles,
   onExtract,
   onExtractAll,
@@ -274,20 +269,6 @@ export const UploadPanel = ({
               <strong>{activeTemplate?.name ?? "No template selected"}</strong>
               {activeTemplate ? ` v${activeTemplate.version}` : ""}
             </span>
-            <select
-              aria-label="Choose active template"
-              value={activeTemplate?.id ?? ""}
-              onChange={(event) => {
-                if (event.target.value) onSelectTemplate(event.target.value);
-              }}
-            >
-              {!activeTemplate && <option value="">Select template…</option>}
-              {templates.map((template) => (
-                <option key={template.id} value={template.id}>
-                  {template.name} v{template.version}
-                </option>
-              ))}
-            </select>
           </div>
           {!activeTemplate && (
             <Link className="ingest-template-link" to="/templates">

@@ -14,7 +14,6 @@ import {
 import { DocumentStage } from "./DocumentStage";
 import { FieldList } from "./FieldList";
 import {
-  fieldsFromCatalogSeed,
   fieldsFromSuggestions,
   newTemplateField,
   uniqueFieldsByName,
@@ -58,108 +57,49 @@ export const TemplateBuilderPage = () => {
   const documentsRef = useRef<SourceDocument[]>([]);
   const catalog = useRef<CatalogField[]>([]);
   const headerCatalogKeys = useRef(new Set<string>());
-  /** Fields loaded from an existing template (kept when a sample has no suggestions yet). */
-  const seedFields = useRef<TemplateField[]>([]);
-  /** Left panel shows fields for the selected file only (not a merge of every upload). */
-  const rebuildForFile = (docs: SourceDocument[], fileId: string | null) => {
-    const focus = docs.find((document) => document.id === fileId) ?? null;
-    setFields((current) => {
-      // Customs the user accepted or added manually stay across file switches.
-      const keptCustoms = current.filter(
-        (field) =>
-          !field.suggested &&
-          !field.catalogKey &&
-          !dismissed.current.has(field.id),
-      );
-      if (!focus?.suggestions) {
-        const seed = seedFields.current.filter(
-          (field) =>
-            !dismissed.current.has(field.id) &&
-            !(field.catalogKey && dismissed.current.has(field.catalogKey)),
-        );
-        const seedIds = new Set(seed.map((field) => field.id));
-        const fallback = uniqueFieldsByName([
-          ...seed,
-          ...keptCustoms.filter((field) => !seedIds.has(field.id)),
-        ]);
-        setSelectedId((currentId) =>
-          currentId && fallback.some((field) => field.id === currentId)
-            ? currentId
-            : (fallback[0]?.id ?? null),
-        );
-        return fallback;
-      }
-      const priorMatched = new Map(
-        current
-          .filter((field) => field.catalogKey)
-          .map((field) => [field.catalogKey as string, field]),
-      );
-      const next = fieldsFromSuggestions(
-        [focus],
-        dismissed.current,
-        keptCustoms,
-        catalog.current,
-        headerCatalogKeys.current,
-      );
-      const merged = uniqueFieldsByName(
-        next.map((field) => {
-          if (!field.catalogKey) return field;
-          const existing = priorMatched.get(field.catalogKey);
-          if (!existing) return field;
-          return {
-            ...field,
-            sampleBox: existing.sampleBox,
-            sampleValue: field.sampleValue ?? existing.sampleValue,
-            name: existing.name || field.name,
-          };
-        }),
-      );
-      setSelectedId((currentId) =>
-        currentId && merged.some((field) => field.id === currentId) ? currentId : (merged[0]?.id ?? null),
-      );
-      return merged;
-    });
-  };
+  /** Which file the current field list belongs to. */
+  const fieldsOwner = useRef<string | null>(null);
 
-  /** Persist union of every sample's matched fields + accepted customs + seed fields. */
-  const fieldsForSave = (current: TemplateField[]) => {
-    const customs = current.filter((field) => !field.suggested && !field.catalogKey);
-    const edits = new Map(
-      current
-        .filter((field) => field.catalogKey && !field.suggested)
-        .map((field) => [field.catalogKey as string, field]),
-    );
-    const fromAll = fieldsFromSuggestions(
-      documentsRef.current,
+  const fieldsForDocument = (document: SourceDocument) => {
+    if (document.ownFields) return document.ownFields;
+    if (!document.suggestions || !catalog.current.length) return [];
+    return fieldsFromSuggestions(
+      [document],
       dismissed.current,
       [],
       catalog.current,
       headerCatalogKeys.current,
-    ).filter((field) => !field.suggested && field.catalogKey);
-    const byKey = new Map<string, TemplateField>();
-    for (const field of fromAll) {
-      const key = field.catalogKey as string;
-      if (dismissed.current.has(key)) continue;
-      const edited = edits.get(key);
-      byKey.set(key, edited ? { ...field, ...edited, catalogKey: key } : field);
-    }
-    for (const [key, field] of edits) {
-      if (!byKey.has(key) && !dismissed.current.has(key)) byKey.set(key, field);
-    }
-    for (const field of seedFields.current) {
-      if (field.catalogKey) {
-        if (dismissed.current.has(field.catalogKey) || byKey.has(field.catalogKey)) continue;
-        byKey.set(field.catalogKey, field);
-      }
-    }
-    const customIds = new Set(customs.map((field) => field.id));
-    const seedCustoms = seedFields.current.filter(
-      (field) =>
-        !field.catalogKey &&
-        !dismissed.current.has(field.id) &&
-        !customIds.has(field.id),
     );
-    return uniqueFieldsByName([...byKey.values(), ...customs, ...seedCustoms]);
+  };
+
+  /** Left panel shows fields for the selected file only (not a merge of every upload). */
+  const rebuildForFile = (docs: SourceDocument[], fileId: string | null) => {
+    const focus = docs.find((document) => document.id === fileId) ?? null;
+    fieldsOwner.current = focus?.id ?? null;
+    const next = focus ? fieldsForDocument(focus) : [];
+    setFields(next);
+    setSelectedId((currentId) =>
+      currentId && next.some((field) => field.id === currentId) ? currentId : (next[0]?.id ?? null),
+    );
+    if (!focus || focus.ownFields) return;
+    if (!next.length && !focus.suggestions) return;
+    setDocuments((current) =>
+      current.map((document) =>
+        document.id === focus.id
+          ? {
+              ...document,
+              ownFields: next,
+              extractedCount: next.filter((field) => !field.suggested).length,
+            }
+          : document,
+      ),
+    );
+  };
+
+  /** Persist every file's own fields. The template schema is their union. */
+  const fieldsForSave = (perFile: TemplateField[][]) => {
+    const schema = perFile.flatMap((list) => list.filter((field) => !field.suggested && field.name.trim()));
+    return uniqueFieldsByName(schema);
   };
 
   const extractFile = async (document: SourceDocument) => {
@@ -178,11 +118,21 @@ export const TemplateBuilderPage = () => {
     try {
       const suggestions = await suggestFields(document.file);
       setDocuments((current) =>
-        current.map((item) =>
-          item.id === document.id
-            ? { ...item, status: "ready" as const, suggestions, message: undefined }
-            : item,
-        ),
+        current.map((item) => {
+          if (item.id !== document.id) return item;
+          const ready: SourceDocument = {
+            ...item,
+            status: "ready",
+            suggestions,
+            message: undefined,
+          };
+          const ownFields = fieldsForDocument(ready);
+          return {
+            ...ready,
+            ownFields,
+            extractedCount: ownFields.filter((field) => !field.suggested).length,
+          };
+        }),
       );
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "This document could not be read.";
@@ -239,23 +189,44 @@ export const TemplateBuilderPage = () => {
     documentsRef.current = documents;
     const focusId = activeId ?? documents[0]?.id ?? null;
     const focus = documents.find((document) => document.id === focusId);
-    if (focus?.suggestions || documents.some((document) => document.suggestions)) {
-      rebuildForFile(documents, focusId);
-    }
+    if (focus?.ownFields || focus?.suggestions) rebuildForFile(documents, focusId);
   }, [documents, activeId]);
 
+  useEffect(() => {
+    const owner = fieldsOwner.current;
+    if (!owner) return;
+    setDocuments((current) => {
+      let changed = false;
+      const next = current.map((document) => {
+        if (document.id !== owner || document.ownFields === fields) return document;
+        changed = true;
+        return {
+          ...document,
+          ownFields: fields,
+          extractedCount: fields.filter((field) => !field.suggested).length,
+        };
+      });
+      return changed ? next : current;
+    });
+  }, [fields]);
+
   /** Show saved sample files without re-running Claude suggest. */
-  const showStoredFiles = (files: File[]) => {
+  const showStoredFiles = (files: File[], storedFields: TemplateField[][]) => {
     if (!files.length) return;
     setDocuments((current) => {
       const known = new Set(current.map((document) => fileKey(document.file)));
-      const additions: SourceDocument[] = files
-        .filter((file) => !known.has(fileKey(file)))
-        .map((file) => ({
+      const additions: SourceDocument[] = [];
+      files.forEach((file, index) => {
+        if (known.has(fileKey(file))) return;
+        const ownFields = storedFields[index] ?? [];
+        additions.push({
           id: crypto.randomUUID(),
           file,
-          status: "ready" as const,
-        }));
+          status: "ready",
+          ownFields,
+          extractedCount: ownFields.filter((field) => !field.suggested).length,
+        });
+      });
       if (!additions.length) return current;
       setActiveId((currentId) => currentId ?? additions[0]?.id ?? null);
       return [...current, ...additions];
@@ -277,15 +248,21 @@ export const TemplateBuilderPage = () => {
         if (cancelled) return;
         catalog.current = fieldsFromCatalog.all;
         headerCatalogKeys.current = new Set(fieldsFromCatalog.header.map((field) => field.key));
-        // New templates start with catalogue defaults already in "In your schema".
-        if (!id && seedFields.current.length === 0) {
-          const seeded = fieldsFromCatalogSeed(fieldsFromCatalog.header, fieldsFromCatalog.lines, {
-            defaultsOnly: true,
+        setDocuments((current) => {
+          let changed = false;
+          const next = current.map((document) => {
+            if (document.ownFields || !document.suggestions) return document;
+            const ownFields = fieldsForDocument({ ...document, ownFields: undefined });
+            if (!ownFields.length) return document;
+            changed = true;
+            return {
+              ...document,
+              ownFields,
+              extractedCount: ownFields.filter((field) => !field.suggested).length,
+            };
           });
-          seedFields.current = seeded;
-          setFields(seeded);
-          setSelectedId(seeded[0]?.id ?? null);
-        }
+          return changed ? next : current;
+        });
         // Re-apply suggestions once the catalogue arrives so matched DB fields land in schema.
         if (documentsRef.current.some((document) => document.status === "ready" && document.suggestions)) {
           rebuildForFile(documentsRef.current, activeId ?? documentsRef.current[0]?.id ?? null);
@@ -300,11 +277,7 @@ export const TemplateBuilderPage = () => {
   // Keep left-panel fields in sync when a sample finishes extracting.
   useEffect(() => {
     documentsRef.current = documents;
-    const focus = documents.find((document) => document.id === activeId);
-    if (focus?.status === "ready" && focus.suggestions && catalog.current.length) {
-      rebuildForFile(documents, activeId);
-    }
-  }, [documents, activeId]);
+  }, [documents]);
 
   useEffect(() => {
     if (!id) return;
@@ -315,7 +288,6 @@ export const TemplateBuilderPage = () => {
         if (cancelled) return;
         setName(template.name);
         setCategory(template.category);
-        seedFields.current = template.fields;
         setFields(template.fields);
         setSelectedId(template.fields[0]?.id ?? null);
 
@@ -325,7 +297,10 @@ export const TemplateBuilderPage = () => {
           stored.map((doc) => fetchTemplateDocumentFile(id, doc.id, doc.fileName)),
         );
         if (cancelled) return;
-        showStoredFiles(files);
+        showStoredFiles(
+          files,
+          stored.map((document) => document.extractedFields ?? []),
+        );
       } catch (reason: unknown) {
         if (!cancelled) {
           setError(reason instanceof Error ? reason.message : "Template could not be loaded.");
@@ -347,11 +322,13 @@ export const TemplateBuilderPage = () => {
   }, []);
 
   const persist = async () => {
-    const toSave = fieldsForSave(fields);
+    const perFile = documents.map((document) =>
+      document.id === activeId ? fields : fieldsForDocument(document),
+    );
+    const toSave = fieldsForSave(perFile);
+    const named = toSave.map((field) => field.name.trim()).filter(Boolean);
     const problem = (() => {
-      const named = toSave.map((field) => field.name.trim()).filter(Boolean);
       if (!name.trim()) return "Enter a template name.";
-      if (!named.length) return "Add at least one field.";
       if (new Set(named.map((item) => item.toLowerCase())).size !== named.length) {
         return "Field names must be unique.";
       }
@@ -368,17 +345,22 @@ export const TemplateBuilderPage = () => {
         id,
         name: name.trim(),
         category,
-        fields: toSave.map((field) => ({
-          ...field,
-          name: field.name.trim(),
-          level: field.level ?? "line",
-          suggested: undefined,
-          sampleValue: undefined,
-        })),
+        fields: toSave
+          .filter((field) => field.name.trim())
+          .map((field) => ({
+            ...field,
+            name: field.name.trim(),
+            level: field.level ?? "line",
+            suggested: undefined,
+            sampleValue: undefined,
+          })),
       });
       await saveTemplateDocuments(
         saved.id,
-        documents.map((document) => document.file),
+        documents.map((document, index) => ({
+          file: document.file,
+          fields: perFile[index] ?? [],
+        })),
       );
       navigate("/templates", { replace: true });
     } catch (reason) {

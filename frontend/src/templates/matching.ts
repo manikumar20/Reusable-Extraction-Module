@@ -11,6 +11,10 @@ export type SourceDocument = {
   status: "reading" | "ready" | "error";
   message?: string;
   suggestions?: FieldSuggestions;
+  /** Fields extracted from this file. Not replaced when another PDF is extracted. */
+  ownFields?: TemplateField[];
+  /** Fields extracted from this file. Stays on this file when another PDF is uploaded. */
+  extractedCount?: number;
 };
 
 export const newTemplateField = (partial?: Partial<TemplateField>): TemplateField => ({
@@ -167,20 +171,15 @@ export const fieldsFromSuggestions = (
     const seenMatched = new Set<string>();
     for (const hit of suggestions.matched) {
       const catalogField = resolveCatalogField(catalog, hit.key, hit.label || hit.printedLabel || "");
-      // Only keep fields that already exist in the catalogue / database.
-      if (!catalogField || seenMatched.has(catalogField.key)) continue;
+      // Schema only keeps a catalogue field when the file actually contained a value.
+      if (!catalogField || seenMatched.has(catalogField.key) || !hit.sampleValue?.trim()) continue;
       seenMatched.add(catalogField.key);
       voteMatched(catalogField, hit.sampleValue);
     }
     const seenSuggested = new Set<string>();
     for (const hit of suggestions.suggested) {
       const catalogField = resolveCatalogField(catalog, hit.key, hit.label || "");
-      if (catalogField) {
-        if (seenMatched.has(catalogField.key)) continue;
-        seenMatched.add(catalogField.key);
-        voteMatched(catalogField, hit.sampleValue);
-        continue;
-      }
+      if (catalogField) continue;
       if (byKey.has(hit.key) || dismissed.has(hit.key) || acceptedIds.has(hit.key) || seenSuggested.has(hit.key)) {
         continue;
       }
@@ -230,4 +229,17 @@ export const fieldsFromSuggestions = (
     );
 
   return [...matched, ...suggested, ...keptAccepted];
+};
+
+/** Schema fields found on one sample. Independent of whichever file is selected. */
+export const extractedCountForDocument = (
+  document: SourceDocument,
+  dismissed: Set<string>,
+  catalog: CatalogField[],
+  headerKeys: Set<string>,
+) => {
+  if (!document.suggestions || !catalog.length) return document.extractedCount;
+  return fieldsFromSuggestions([document], dismissed, [], catalog, headerKeys).filter(
+    (field) => !field.suggested,
+  ).length;
 };

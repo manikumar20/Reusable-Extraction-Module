@@ -117,8 +117,7 @@ const detectTemplateFields = async (
   const catalogText = catalog
     .map((entry) => {
       const scope = headerKeySet.has(entry.key) ? "header" : "line";
-      const mark = entry.isDefault ? " [always included]" : "";
-      return `- ${entry.key} (${entry.label}) [${scope}]${mark}`;
+      return `- ${entry.key} (${entry.label}) [${scope}]`;
     })
     .join("\n");
 
@@ -220,7 +219,7 @@ const detectTemplateFields = async (
                   "Catalogue keys (use exact key in matched):",
                   catalogText,
                   `Call ${TOOL_NAME} once.`,
-                  `matched: up to ${MAX_MATCHED} catalogue keys this document clearly shows (header + line). Prefer the most important labels. Map RFQ No → document_number. Skip missing keys. Keep sampleValue short.`,
+                  `matched: up to ${MAX_MATCHED} catalogue keys whose label is actually printed on THIS document, with sampleValue copied from the page. Skip every key that is not printed, including catalogue defaults. Do not invent a label or value. Keep sampleValue short.`,
                   `suggested: up to ${MAX_SUGGESTIONS} other printed labels not in the catalogue. ONCE_PER_DOCUMENT for form fields; EACH_LINE for table columns. If this is not an RFQ, still suggest the important printed labels (patient name, invoice total, etc.).`,
                   "Copy sampleValue briefly as printed. An empty matched+suggested response is wrong when labels are visible.",
                 ].join("\n"),
@@ -296,9 +295,42 @@ const detectTemplateFields = async (
     .slice(0, MAX_MATCHED);
 
   const docText = normalLabel(sample.text);
+  const appears = (value: string) => {
+    const compact = normalLabel(value);
+    return compact.length >= 3 && docText.includes(compact);
+  };
+  const labelAgrees = (printed: string, entry: CatalogField) => {
+    const printedCompact = normalLabel(printed);
+    const labelCompact = normalLabel(entry.label);
+    const keyCompact = normalLabel(entry.key);
+    if (printedCompact.length < 3) return false;
+    if (printedCompact === labelCompact || printedCompact === keyCompact) return true;
+    const shorter = Math.min(printedCompact.length, labelCompact.length);
+    const longer = Math.max(printedCompact.length, labelCompact.length);
+    return (
+      shorter >= 4 &&
+      shorter / longer >= 0.6 &&
+      (printedCompact.includes(labelCompact) || labelCompact.includes(printedCompact))
+    );
+  };
+  // Drop catalogue keys the file does not actually show. A default such as
+  // Customer or Delivery Location must not enter the schema unless its label
+  // and a copied value are both in the document.
+  const groundedMatched = matched.filter((match) => {
+    const entry = byKey.get(match.key);
+    if (!entry || !match.sampleValue.trim()) return false;
+    const agrees = labelAgrees(match.printedLabel, entry);
+    if (!docText) return agrees;
+    return appears(match.sampleValue) && agrees && (appears(match.printedLabel) || appears(entry.label));
+  });
+  const groundedKeys = new Set(groundedMatched.map((match) => match.key));
+  const unmatchedRows = [...firstSeen.entries()]
+    .filter(([key]) => !groundedKeys.has(key))
+    .map(([, row]) => row);
+
   const vision = sample.vision;
   const matchedColumns = new Set(
-    matched.flatMap((match) =>
+    groundedMatched.flatMap((match) =>
       [normalLabel(match.printedLabel), normalLabel(match.label), normalLabel(match.key)].filter(
         Boolean,
       ),
@@ -352,7 +384,7 @@ const detectTemplateFields = async (
   const taken = new Set(
     catalog.flatMap((entry: CatalogField) => [normalLabel(entry.label), normalLabel(entry.key)]),
   );
-  matched.forEach((entry) => {
+  groundedMatched.forEach((entry) => {
     taken.add(normalLabel(entry.label));
     taken.add(normalLabel(entry.printedLabel));
   });
@@ -391,19 +423,47 @@ const detectTemplateFields = async (
     });
   });
 
+  // A catalogue key that was not printed stays out of the schema, but the
+  // label actually on the page can still be offered as a suggestion.
+  unmatchedRows.forEach((row) => {
+    if (suggested.length >= MAX_SUGGESTIONS) return;
+    const printed = text(row.printedLabel);
+    const sampleValue = text(row.sampleValue);
+    const label = printed.slice(0, 80);
+    const normal = normalLabel(label);
+    if (!normal || !sampleValue || taken.has(normal) || taken.has(normalLabel(printed))) return;
+    if (catalog.some((entry) => normalLabel(entry.key) === normal || normalLabel(entry.label) === normal)) {
+      return;
+    }
+    if (docText && (!appears(printed) || !appears(sampleValue))) return;
+    taken.add(normal);
+    let key = `${CUSTOM_FIELD_PREFIX}${slug(label)}`;
+    for (let index = 2; keys.has(key); index += 1) key = `${CUSTOM_FIELD_PREFIX}${slug(label)}_${index}`;
+    keys.add(key);
+    suggested.push({
+      key,
+      label,
+      dataType: FIELD_DATA_TYPES.TEXT,
+      description: "Printed on the sample, and not one of the catalogue fields.",
+      matchRole: "NONE",
+      sampleValue: sampleValue.slice(0, SAMPLE_VALUE_MAX_CHARS),
+      showToSupplier: true,
+    });
+  });
+
   console.info(
-    `Template field suggestion for "${originalName}": ${responses.length} runs, ${usage.inputTokens} in / ${usage.outputTokens} out tokens, matched ${matched.length}, suggested ${suggested.length}${vision ? " (vision)" : ""}.`,
+    `Template field suggestion for "${originalName}": ${responses.length} runs, ${usage.inputTokens} in / ${usage.outputTokens} out tokens, matched ${groundedMatched.length}, suggested ${suggested.length}${vision ? " (vision)" : ""}.`,
   );
 
   return {
-    matched,
+    matched: groundedMatched,
     suggested,
     usage: { ...usage, costUsd: tokenCostUsd(usage) },
   };
 };
 
 const CACHE_LIMIT = 200;
-const CACHE_VERSION = "v8-any-pdf-vision";
+const CACHE_VERSION = "v9-grounded-match";
 const resultsByFile = new Map<string, FieldSuggestions>();
 
 const mergeUsage = (

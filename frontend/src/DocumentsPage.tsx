@@ -293,8 +293,8 @@ export const DocumentsPage = () => {
                         onClick={() => void openDocument(document)}
                       >
                         <svg viewBox="0 0 24 24" aria-hidden="true">
-                          <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" />
-                          <circle cx="12" cy="12" r="3" />
+                          <path d="M2.5 12S6 7 12 7s9.5 5 9.5 5-3.5 5-9.5 5S2.5 12 2.5 12z" />
+                          <circle cx="12" cy="12" r="2.25" fill="currentColor" stroke="none" />
                         </svg>
                       </button>
                       <button
@@ -305,8 +305,8 @@ export const DocumentsPage = () => {
                         onClick={() => void openDocument(document)}
                       >
                         <svg viewBox="0 0 24 24" aria-hidden="true">
-                          <path d="M12 20h9" />
-                          <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+                          <path d="M13.5 6.5 17.5 10.5" />
+                          <path d="M4.5 19.5 8 18.5 18.2 8.3a1.6 1.6 0 0 0-2.3-2.3L5.7 16.2 4.5 19.5z" />
                         </svg>
                       </button>
                       <button
@@ -317,9 +317,9 @@ export const DocumentsPage = () => {
                         onClick={() => void removeDocument(document)}
                       >
                         <svg viewBox="0 0 24 24" aria-hidden="true">
-                          <path d="M3 6h18" />
-                          <path d="M8 6V4h8v2" />
-                          <path d="M6 6l1 14h10l1-14" />
+                          <path d="M5 7.5h14" />
+                          <path d="M9.5 7.5V6h5v1.5" />
+                          <path d="M7.5 7.5 8.2 18h7.6l.7-10.5" />
                         </svg>
                       </button>
                     </div>

@@ -85,6 +85,7 @@ export type StoredTemplateDocument = {
   fileName: string;
   mimeType: string;
   createdAt: string;
+  extractedFields?: TemplateField[];
 };
 
 export const listTemplateDocuments = async (templateId: string) => {
@@ -94,9 +95,16 @@ export const listTemplateDocuments = async (templateId: string) => {
   return payload.documents;
 };
 
-export const saveTemplateDocuments = async (templateId: string, files: File[]) => {
+export const saveTemplateDocuments = async (
+  templateId: string,
+  files: { file: File; fields: TemplateField[] }[],
+) => {
   const body = new FormData();
-  files.forEach((file) => body.append("files", file));
+  files.forEach((item) => body.append("files", item.file));
+  body.append(
+    "extracted",
+    JSON.stringify(files.map((item) => item.fields)),
+  );
   const response = await fetch(apiUrl(`/templates/${templateId}/documents`), {
     method: "PUT",
     body,

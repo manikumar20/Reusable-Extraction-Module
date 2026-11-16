@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS template_documents (
   file_name TEXT NOT NULL,
   stored_name TEXT NOT NULL,
   mime_type TEXT NOT NULL DEFAULT '',
+  extracted_fields JSONB NOT NULL DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

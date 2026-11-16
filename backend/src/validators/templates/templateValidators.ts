@@ -40,7 +40,8 @@ export const templateFormSchema = z
   .object({
     name: trimmed(120),
     category: z.enum(TEMPLATE_CATEGORIES),
-    fields: z.array(templateFieldSchema).min(1, "Add at least one field."),
+    // Drafts may be created with no fields yet; uniqueness still enforced when present.
+    fields: z.array(templateFieldSchema).default([]),
   })
   .strict()
   .superRefine((body, ctx) => {

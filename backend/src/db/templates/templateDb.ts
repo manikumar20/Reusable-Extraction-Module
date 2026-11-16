@@ -40,6 +40,7 @@ export type Template = {
   category: TemplateCategory;
   createdAt: string;
   updatedAt: string;
+  published: boolean;
   fields: TemplateField[];
 };
 
@@ -72,10 +73,10 @@ export const toJobTemplate = (template: Template) => ({
 });
 
 export const getActiveTemplateId = async (): Promise<string | null> => {
-  const { rows } = await getPool().query<{ template_id: string }>(
-    `SELECT template_id FROM template_versions WHERE is_active LIMIT 1`,
+  const { rows } = await getPool().query<{ id: string }>(
+    `SELECT id FROM templates WHERE is_active LIMIT 1`,
   );
-  return rows[0]?.template_id ?? null;
+  return rows[0]?.id ?? null;
 };
 
 export const getActiveTemplate = async (): Promise<Template | null> => {
@@ -87,13 +88,13 @@ export const setActiveTemplate = async (templateId: string | null): Promise<Temp
   const client = await getPool().connect();
   try {
     await client.query("BEGIN");
-    await client.query(`UPDATE template_versions SET is_active = FALSE WHERE is_active`);
+    await client.query(`UPDATE templates SET is_active = FALSE WHERE is_active`);
     if (templateId) {
       const updated = await client.query(
         `
-          UPDATE template_versions
+          UPDATE templates
           SET is_active = TRUE, updated_at = NOW()
-          WHERE template_id = $1
+          WHERE id = $1
         `,
         [templateId],
       );
@@ -112,19 +113,19 @@ export const setActiveTemplate = async (templateId: string | null): Promise<Temp
   return templateId ? getTemplate(templateId) : null;
 };
 
-type VersionRow = {
+type TemplateRow = {
   id: string;
-  template_id: string;
   name: string;
   version: number;
   category: string;
   created_at: Date;
   updated_at: Date;
+  published: boolean;
 };
 
 type FieldRow = {
   id: string;
-  template_version_id: string;
+  template_id: string;
   position: number;
   name: string;
   field_type: string;
@@ -186,58 +187,60 @@ const mapField = (row: FieldRow): TemplateField => {
   return field;
 };
 
-const loadFields = async (versionIds: string[]) => {
+const loadFields = async (templateIds: string[]) => {
   const grouped = new Map<string, TemplateField[]>();
-  if (!versionIds.length) return grouped;
+  if (!templateIds.length) return grouped;
   const { rows } = await getPool().query<FieldRow>(
     `
-      SELECT id, template_version_id, position, name, field_type, required,
+      SELECT id, template_id, position, name, field_type, required,
              hint, format, validation, sample_page, sample_x, sample_y, sample_w, sample_h,
              catalog_key, level
       FROM template_fields
-      WHERE template_version_id = ANY($1::uuid[])
+      WHERE template_id = ANY($1::uuid[])
       ORDER BY position ASC, name ASC
     `,
-    [versionIds],
+    [templateIds],
   );
   for (const row of rows) {
-    const list = grouped.get(row.template_version_id) ?? [];
+    const list = grouped.get(row.template_id) ?? [];
     list.push(mapField(row));
-    grouped.set(row.template_version_id, list);
+    grouped.set(row.template_id, list);
   }
   return grouped;
 };
 
-const toTemplate = (row: VersionRow, fields: TemplateField[]): Template => ({
-  id: row.template_id,
+const toTemplate = (row: TemplateRow, fields: TemplateField[]): Template => ({
+  id: row.id,
   name: row.name,
   version: row.version,
   category: row.category as TemplateCategory,
   createdAt: iso(row.created_at),
   updatedAt: iso(row.updated_at),
+  published: row.published !== false,
   fields,
 });
 
 const insertFields = async (
-  rowId: string,
+  templateId: string,
   fields: FieldInput[],
   query: (text: string, values: unknown[]) => Promise<unknown>,
 ) => {
   for (const [index, field] of fields.entries()) {
     const box = field.sampleBox;
-    // Prefer the client field id when present so edits stay stable; otherwise mint one.
     await query(
       `
         INSERT INTO template_fields (
-          id, template_version_id, position, name, field_type, required,
+          id, template_id, position, name, field_type, required,
           hint, format, validation, sample_page, sample_x, sample_y, sample_w, sample_h,
           catalog_key, level
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
       `,
       [
-        field.id?.trim() || randomUUID(),
-        rowId,
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(field.id?.trim() ?? "")
+          ? field.id.trim()
+          : randomUUID(),
+        templateId,
         index,
         field.name,
         field.type,
@@ -271,32 +274,32 @@ export const listTemplates = async (filter: {
     params.push(`%${filter.query}%`);
     where.push(`name ILIKE $${params.length}`);
   }
-  const { rows } = await getPool().query<VersionRow>(
+  const { rows } = await getPool().query<TemplateRow>(
     `
-      SELECT id, template_id, name, version, category, created_at, updated_at
-      FROM template_versions
+      SELECT id, name, version, category, published, created_at, updated_at
+      FROM templates
       ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
       ORDER BY updated_at DESC, name ASC
     `,
     params,
   );
   const fields = await loadFields(rows.map((row) => row.id));
-  const counts = await countDocumentsByTemplate(rows.map((row) => row.template_id));
+  const counts = await countDocumentsByTemplate(rows.map((row) => row.id));
   const activeId = await getActiveTemplateId();
   return rows.map((row) => ({
     ...toTemplate(row, fields.get(row.id) ?? []),
-    documentCount: counts.get(row.template_id) ?? 0,
+    documentCount: counts.get(row.id) ?? 0,
     autoApprovedPercent: null,
-    active: row.template_id === activeId,
+    active: row.id === activeId,
   }));
 };
 
 export const getTemplate = async (templateId: string): Promise<Template | null> => {
-  const { rows } = await getPool().query<VersionRow>(
+  const { rows } = await getPool().query<TemplateRow>(
     `
-      SELECT id, template_id, name, version, category, created_at, updated_at
-      FROM template_versions
-      WHERE template_id = $1
+      SELECT id, name, version, category, published, created_at, updated_at
+      FROM templates
+      WHERE id = $1
       LIMIT 1
     `,
     [templateId],
@@ -311,20 +314,20 @@ export const createTemplate = async (input: {
   name: string;
   category: TemplateCategory;
   fields: FieldInput[];
+  published?: boolean;
 }): Promise<Template> => {
   const templateId = randomUUID();
-  const versionId = randomUUID();
   const client = await getPool().connect();
   try {
     await client.query("BEGIN");
     await client.query(
       `
-        INSERT INTO template_versions (id, template_id, name, version, category)
-        VALUES ($1, $2, $3, 1, $4)
+        INSERT INTO templates (id, name, version, category, published)
+        VALUES ($1, $2, 1, $3, $4)
       `,
-      [versionId, templateId, input.name, input.category],
+      [templateId, input.name, input.category, input.published === true],
     );
-    await insertFields(versionId, input.fields, (text, values) => client.query(text, values));
+    await insertFields(templateId, input.fields, (text, values) => client.query(text, values));
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");
@@ -337,7 +340,7 @@ export const createTemplate = async (input: {
   return created;
 };
 
-/** Update the single mutable template row in place (no version history). */
+/** Update the template row in place (no version history). */
 export const saveTemplateVersion = async (
   templateId: string,
   input: { name: string; category: TemplateCategory; fields: FieldInput[] },
@@ -348,27 +351,26 @@ export const saveTemplateVersion = async (
     const existing = await client.query<{ id: string }>(
       `
         SELECT id
-        FROM template_versions
-        WHERE template_id = $1
+        FROM templates
+        WHERE id = $1
         LIMIT 1
       `,
       [templateId],
     );
-    const rowId = existing.rows[0]?.id;
-    if (!rowId) {
+    if (!existing.rows[0]) {
       await client.query("ROLLBACK");
       return null;
     }
     await client.query(
       `
-        UPDATE template_versions
-        SET name = $2, category = $3, version = 1, updated_at = NOW()
-        WHERE template_id = $1
+        UPDATE templates
+        SET name = $2, category = $3, version = 1, published = TRUE, updated_at = NOW()
+        WHERE id = $1
       `,
       [templateId, input.name, input.category],
     );
-    await client.query(`DELETE FROM template_fields WHERE template_version_id = $1`, [rowId]);
-    await insertFields(rowId, input.fields, (text, values) => client.query(text, values));
+    await client.query(`DELETE FROM template_fields WHERE template_id = $1`, [templateId]);
+    await insertFields(templateId, input.fields, (text, values) => client.query(text, values));
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");
@@ -386,6 +388,7 @@ export type TemplateDocument = {
   storedName: string;
   mimeType: string;
   createdAt: string;
+  extractedFields: TemplateField[];
 };
 
 type DocumentRow = {
@@ -395,6 +398,33 @@ type DocumentRow = {
   stored_name: string;
   mime_type: string;
   created_at: Date;
+  extracted_fields?: unknown;
+};
+
+const parseExtractedFields = (value: unknown): TemplateField[] => {
+  if (!Array.isArray(value)) return [];
+  const fields: TemplateField[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Record<string, unknown>;
+    const name = typeof row.name === "string" ? row.name.trim() : "";
+    if (!name) continue;
+    const type = (FIELD_TYPES as readonly string[]).includes(String(row.type))
+      ? (row.type as FieldType)
+      : "text";
+    fields.push({
+      id: typeof row.id === "string" && row.id.trim() ? row.id : randomUUID(),
+      name,
+      type,
+      required: row.required === true,
+      hint: typeof row.hint === "string" ? row.hint : undefined,
+      catalogKey: typeof row.catalogKey === "string" ? row.catalogKey : undefined,
+      level: row.level === "header" ? "header" : "line",
+      suggested: row.suggested === true,
+      sampleValue: typeof row.sampleValue === "string" ? row.sampleValue : undefined,
+    });
+  }
+  return fields;
 };
 
 const mapDocument = (row: DocumentRow): TemplateDocument => ({
@@ -404,6 +434,7 @@ const mapDocument = (row: DocumentRow): TemplateDocument => ({
   storedName: row.stored_name,
   mimeType: row.mime_type,
   createdAt: iso(row.created_at),
+  extractedFields: parseExtractedFields(row.extracted_fields),
 });
 
 const countDocumentsByTemplate = async (templateIds: string[]) => {
@@ -435,7 +466,7 @@ export const listTemplateDocuments = async (
 ): Promise<TemplateDocument[]> => {
   const { rows } = await getPool().query<DocumentRow>(
     `
-      SELECT id, template_id, file_name, stored_name, mime_type, created_at
+      SELECT id, template_id, file_name, stored_name, mime_type, extracted_fields, created_at
       FROM template_documents
       WHERE template_id = $1
       ORDER BY created_at ASC
@@ -451,7 +482,7 @@ export const getTemplateDocument = async (
 ): Promise<TemplateDocument | null> => {
   const { rows } = await getPool().query<DocumentRow>(
     `
-      SELECT id, template_id, file_name, stored_name, mime_type, created_at
+      SELECT id, template_id, file_name, stored_name, mime_type, extracted_fields, created_at
       FROM template_documents
       WHERE template_id = $1 AND id = $2
       LIMIT 1
@@ -464,7 +495,7 @@ export const getTemplateDocument = async (
 /** Replace all sample documents for a template with the newly uploaded files. */
 export const replaceTemplateDocuments = async (
   templateId: string,
-  files: { fileName: string; storedName: string; mimeType: string }[],
+  files: { fileName: string; storedName: string; mimeType: string; extractedFields?: unknown }[],
 ): Promise<TemplateDocument[]> => {
   const existing = await listTemplateDocuments(templateId);
   await getPool().query("DELETE FROM template_documents WHERE template_id = $1", [templateId]);
@@ -473,10 +504,17 @@ export const replaceTemplateDocuments = async (
   for (const file of files) {
     await getPool().query(
       `
-        INSERT INTO template_documents (id, template_id, file_name, stored_name, mime_type)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO template_documents (id, template_id, file_name, stored_name, mime_type, extracted_fields)
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb)
       `,
-      [randomUUID(), templateId, file.fileName, file.storedName, file.mimeType || ""],
+      [
+        randomUUID(),
+        templateId,
+        file.fileName,
+        file.storedName,
+        file.mimeType || "",
+        JSON.stringify(parseExtractedFields(file.extractedFields)),
+      ],
     );
   }
   return listTemplateDocuments(templateId);
@@ -484,10 +522,7 @@ export const replaceTemplateDocuments = async (
 
 export const deleteTemplate = async (templateId: string): Promise<boolean> => {
   const docs = await listTemplateDocuments(templateId);
-  const { rowCount } = await getPool().query(
-    "DELETE FROM template_versions WHERE template_id = $1",
-    [templateId],
-  );
+  const { rowCount } = await getPool().query("DELETE FROM templates WHERE id = $1", [templateId]);
   await getPool().query("DELETE FROM template_documents WHERE template_id = $1", [templateId]);
   await unlinkStored(docs.map((doc) => doc.storedName));
   return (rowCount ?? 0) > 0;

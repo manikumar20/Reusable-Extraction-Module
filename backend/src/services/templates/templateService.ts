@@ -79,6 +79,7 @@ export const publicTemplateDocuments = async (templateId: string) => {
       fileName: doc.fileName,
       mimeType: doc.mimeType,
       createdAt: doc.createdAt,
+      extractedFields: doc.extractedFields,
     })),
   };
 };

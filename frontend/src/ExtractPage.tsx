@@ -3,8 +3,8 @@ import { jobFromDocument } from "./jobFromDocument";
 import { Results } from "./Results";
 import { apiUrl } from "./services/api";
 import { downloadDriveFile, listDriveFiles } from "./services/drive";
-import { activateTemplate, getActiveTemplate, getTemplate, listTemplates } from "./templates/api";
-import { rememberTemplate, type Template, type TemplateSummary } from "./templates/types";
+import { getActiveTemplate } from "./templates/api";
+import { rememberTemplate, type Template } from "./templates/types";
 import type { Catalog, ExtractedFieldRow, Job, ServerConfig, StoredDocument } from "./types";
 import { UploadPanel, type QueueItem } from "./UploadPanel";
 import { useJob } from "./useJob";
@@ -34,7 +34,6 @@ export const ExtractPage = () => {
   const [documents, setDocuments] = useState<StoredDocument[]>([]);
   const [offline, setOffline] = useState(false);
   const [activeTemplate, setActiveTemplate] = useState<Template | null>(null);
-  const [templates, setTemplates] = useState<TemplateSummary[]>([]);
   const [previewFile, setPreviewFile] = useState<File | null>(null);
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [batchMode, setBatchMode] = useState(false);
@@ -96,11 +95,10 @@ export const ExtractPage = () => {
     let cancelled = false;
     const load = async () => {
       try {
-        const [configResponse, catalogResponse, active, rows] = await Promise.all([
+        const [configResponse, catalogResponse, active] = await Promise.all([
           fetch(apiUrl("/extract/config")),
           fetch(apiUrl("/extract/catalog")),
           getActiveTemplate().catch(() => null),
-          listTemplates({ category: "All", query: "" }).catch(() => [] as TemplateSummary[]),
         ]);
         if (cancelled) return;
         if (configResponse.ok) {
@@ -116,7 +114,6 @@ export const ExtractPage = () => {
           rememberTemplate(active);
           setActiveTemplate(active);
         }
-        setTemplates(rows);
       } catch {
         if (!cancelled) setOffline(true);
       }
@@ -440,36 +437,6 @@ export const ExtractPage = () => {
     })();
   }, [loadDocuments]);
 
-  const onSelectTemplate = async (id: string) => {
-    setUploadError("");
-    try {
-      const activated = await activateTemplate(id);
-      rememberTemplate(activated);
-      setActiveTemplate(activated);
-      setTemplates((current) =>
-        current.map((row) => ({ ...row, active: row.id === activated.id })),
-      );
-    } catch (reason) {
-      try {
-        const template = await getTemplate(id);
-        rememberTemplate(template);
-        setActiveTemplate(template);
-      } catch {
-        setUploadError(reason instanceof Error ? reason.message : "Template could not be activated.");
-      }
-    }
-  };
-
-  const activeSummary: TemplateSummary | null = activeTemplate
-    ? {
-        ...activeTemplate,
-        documentCount: templates.find((row) => row.id === activeTemplate.id)?.documentCount ?? 0,
-        autoApprovedPercent:
-          templates.find((row) => row.id === activeTemplate.id)?.autoApprovedPercent ?? null,
-        active: true,
-      }
-    : null;
-
   const inspectDocument = useMemo(() => {
     if (inspectDocumentId == null) return null;
     return (
@@ -516,13 +483,11 @@ export const ExtractPage = () => {
           uploading={uploading}
           uploadError={uploadError}
           liveError={liveError}
-          activeTemplate={activeSummary}
-          templates={templates}
+          activeTemplate={activeTemplate}
           queue={queue}
           batchMode={batchMode}
           saving={saving}
           onBatchModeChange={setBatchMode}
-          onSelectTemplate={(id) => void onSelectTemplate(id)}
           onAddFiles={(files) => {
             setUploadError("");
             setQueue((current) => [

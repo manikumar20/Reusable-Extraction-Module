@@ -62,6 +62,8 @@ export const env = {
   port: Number(required("PORT")),
   corsOrigins: parseOrigins(required("CORS_ORIGIN")),
   databaseUrl: required("DATABASE_URL"),
+  jwtSecret: required("JWT_SECRET"),
+  jwtExpiresIn: required("JWT_EXPIRES_IN"),
   /** Always from config/.env — never from .env.example. */
   anthropicApiKey: optional("ANTHROPIC_API_KEY"),
   anthropicAuthToken: optional("ANTHROPIC_AUTH_TOKEN"),

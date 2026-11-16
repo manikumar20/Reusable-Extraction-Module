@@ -21,6 +21,8 @@ const startServer = async () => {
 
   const { ensureDefaultTemplate } = await import("./services/templates/ensureDefaultTemplate.js");
   await ensureDefaultTemplate();
+  const { ensureDefaultUser } = await import("./services/auth/ensureDefaultUser.js");
+  await ensureDefaultUser();
 
   const app = createApp();
   const server = app.listen(env.port, () => {

@@ -6,6 +6,7 @@ import {
   clearActiveTemplate,
   deleteTemplate,
   listTemplates,
+  saveTemplate,
 } from "./api";
 import "./templates.css";
 import {
@@ -13,6 +14,8 @@ import {
   rememberTemplate,
   type TemplateSummary,
 } from "./types";
+
+type StatusFilter = "all" | "active" | "draft";
 
 const isDefaultTemplate = (name: string) =>
   name === "Default Line Fields" || name === "Default template";
@@ -29,6 +32,8 @@ const fieldMix = (template: TemplateSummary) => {
   return { header, line };
 };
 
+const isDraft = (template: TemplateSummary) => !template.published;
+
 export const TemplatesPage = () => {
   const navigate = useNavigate();
   const [templates, setTemplates] = useState<TemplateSummary[]>([]);
@@ -37,7 +42,9 @@ export const TemplatesPage = () => {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [activatingId, setActivatingId] = useState<string | null>(null);
   const [deactivating, setDeactivating] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [createOpen, setCreateOpen] = useState(false);
   const [createName, setCreateName] = useState("Untitled template");
   const [createFiles, setCreateFiles] = useState<File[]>([]);
@@ -71,14 +78,20 @@ export const TemplatesPage = () => {
     [templates],
   );
 
+  const draftCount = useMemo(
+    () => templates.filter((template) => isDraft(template)).length,
+    [templates],
+  );
+
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return templates.filter((template) => {
-      if (active && template.id === active.id) return false;
+      if (statusFilter === "active" && !template.active) return false;
+      if (statusFilter === "draft" && !isDraft(template)) return false;
       if (!needle) return true;
       return template.name.toLowerCase().includes(needle);
     });
-  }, [templates, active, query]);
+  }, [templates, query, statusFilter]);
 
   const onDelete = async (template: TemplateSummary) => {
     if (!window.confirm(`Delete template “${template.name}”? This cannot be undone.`)) return;
@@ -123,6 +136,30 @@ export const TemplatesPage = () => {
     }
   };
 
+  const onCreateContinue = async () => {
+    setCreating(true);
+    setError("");
+    try {
+      const draft = await saveTemplate({
+        name: createName.trim() || "Untitled template",
+        category: "Finance",
+        fields: [],
+      });
+      setCreateOpen(false);
+      navigate(`/templates/${draft.id}/edit`, {
+        state: {
+          name: draft.name,
+          files: createFiles,
+        },
+      });
+      setCreateFiles([]);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Draft template could not be created.");
+    } finally {
+      setCreating(false);
+    }
+  };
+
   const emptyLibrary = !loading && templates.length === 0;
 
   return (
@@ -135,9 +172,8 @@ export const TemplatesPage = () => {
           <div className="hub-hero-main">
             <div className="hub-hero-title-row">
               <span className="hub-hero-dot" aria-hidden="true" />
-              <h2>
-                {active.name}
-              </h2>
+              <h2>{active.name}</h2>
+              <span className="hub-status-tag active">Active</span>
               {isDefaultTemplate(active.name) && <span className="hub-default-tag">Built-in</span>}
             </div>
             <div className="hub-hero-meta">
@@ -203,8 +239,31 @@ export const TemplatesPage = () => {
               aria-label="Search templates"
             />
           </label>
+
+          <div className="hub-filter-row" role="group" aria-label="Status filter">
+            {(
+              [
+                { id: "all", label: "All" },
+                { id: "active", label: "Active" },
+                { id: "draft", label: `Draft${draftCount ? ` (${draftCount})` : ""}` },
+              ] as const
+            ).map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                className={`hub-filter${statusFilter === option.id ? " active" : ""}`}
+                aria-pressed={statusFilter === option.id}
+                onClick={() => setStatusFilter(option.id)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+
           <button type="button" className="hub-create-btn" onClick={() => setCreateOpen(true)}>
-            <span className="hub-create-icon" aria-hidden="true">+</span>
+            <span className="hub-create-icon" aria-hidden="true">
+              +
+            </span>
             Create New Template
           </button>
         </div>
@@ -214,7 +273,7 @@ export const TemplatesPage = () => {
         <section className="hub-library">
           <div className="hub-library-bar">
             <h3>
-              Created Templates <span>({templates.length})</span>
+              Created Templates <span>({filtered.length})</span>
             </h3>
           </div>
 
@@ -222,16 +281,18 @@ export const TemplatesPage = () => {
             <div className="hub-empty-library">
               <p>No templates yet. Create one to get started.</p>
               <button type="button" className="hub-create-btn" onClick={() => setCreateOpen(true)}>
-                <span className="hub-create-icon" aria-hidden="true">+</span>
+                <span className="hub-create-icon" aria-hidden="true">
+                  +
+                </span>
                 Create New Template
               </button>
             </div>
           ) : filtered.length === 0 ? (
-            <p className="tm-note">No templates match that search.</p>
+            <p className="tm-note">No templates match that search or filter.</p>
           ) : (
             <div className="hub-grid">
               {filtered.map((template) => (
-                <article className="hub-card" key={template.id}>
+                <article className={`hub-card${template.active ? " is-active" : " is-draft"}`} key={template.id}>
                   <button
                     type="button"
                     className="hub-card-x"
@@ -250,20 +311,25 @@ export const TemplatesPage = () => {
                       <span className="hub-card-mark" aria-hidden="true">
                         {template.name.slice(0, 1).toUpperCase()}
                       </span>
-                      <h4>{template.name}</h4>
+                      <div className="hub-card-title-wrap">
+                        <h4>{template.name}</h4>
+                      </div>
                     </div>
                     <div className="hub-card-stats">
+                      <span>{template.category}</span>
                       <span>{template.fields.length} fields</span>
                       {fieldMix(template).header > 0 && <span>{fieldMix(template).header} header</span>}
                       {fieldMix(template).line > 0 && <span>{fieldMix(template).line} line</span>}
                     </div>
-                    {template.fields.length > 0 && (
+                    {template.fields.length > 0 ? (
                       <div className="hub-chip-row">
                         {template.fields.slice(0, 3).map((field) => (
                           <span key={field.id}>{field.name}</span>
                         ))}
                         {template.fields.length > 3 && <span>+{template.fields.length - 3}</span>}
                       </div>
+                    ) : (
+                      <p className="hub-card-empty">Draft — no fields yet</p>
                     )}
                     <p className="hub-card-foot">
                       {template.documentCount > 0
@@ -272,14 +338,25 @@ export const TemplatesPage = () => {
                       {updatedOn(template.updatedAt) ? ` · Updated ${updatedOn(template.updatedAt)}` : ""}
                     </p>
                   </button>
-                  <button
-                    type="button"
-                    className="hub-set-active"
-                    disabled={activatingId === template.id}
-                    onClick={() => void onActivate(template)}
-                  >
-                    {activatingId === template.id ? "Setting…" : "Set as Active"}
-                  </button>
+                  {template.active ? (
+                    <button type="button" className="hub-set-active is-current" disabled>
+                      Currently active
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="hub-set-active"
+                      disabled={activatingId === template.id || template.fields.length === 0}
+                      title={
+                        template.fields.length === 0
+                          ? "Add fields before setting this draft as active"
+                          : undefined
+                      }
+                      onClick={() => void onActivate(template)}
+                    >
+                      {activatingId === template.id ? "Setting…" : "Set as Active"}
+                    </button>
+                  )}
                 </article>
               ))}
             </div>
@@ -297,7 +374,7 @@ export const TemplatesPage = () => {
             onClick={(event) => event.stopPropagation()}
           >
             <h3 id="hub-create-title">Create New Template</h3>
-            <p>Name your schema, then configure fields in Template Studio.</p>
+            <p>Name your schema, then configure fields in Template Studio. It is saved as a draft.</p>
             <label className="hub-modal-field">
               Template name
               <input
@@ -359,22 +436,16 @@ export const TemplatesPage = () => {
               <button
                 type="button"
                 className="hub-btn-primary"
-                onClick={() => {
-                  setCreateOpen(false);
-                  navigate("/templates/new", {
-                    state: {
-                      name: createName.trim() || "Untitled template",
-                      files: createFiles,
-                    },
-                  });
-                  setCreateFiles([]);
-                }}
+                disabled={creating}
+                onClick={() => void onCreateContinue()}
               >
-                {createFiles.length > 1
-                  ? `Extract All (${createFiles.length} files simultaneously)`
-                  : createFiles.length === 1
-                    ? "Extract & Continue"
-                    : "Continue"}
+                {creating
+                  ? "Creating draft…"
+                  : createFiles.length > 1
+                    ? `Extract All (${createFiles.length} files simultaneously)`
+                    : createFiles.length === 1
+                      ? "Extract & Continue"
+                      : "Continue"}
               </button>
             </div>
           </div>

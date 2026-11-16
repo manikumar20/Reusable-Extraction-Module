@@ -71,6 +71,7 @@ export const ensureDefaultTemplate = async () => {
       name: DEFAULT_TEMPLATE_NAME,
       category: "Finance",
       fields: defaultTemplateFields(),
+      published: true,
     }));
 
   if (!existing) {

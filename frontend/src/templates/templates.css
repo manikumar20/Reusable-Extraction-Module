@@ -1759,7 +1759,69 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
+}
+
+.hub-filter-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.hub-status-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.hub-status-tag.active {
+  background: color-mix(in srgb, #16a34a 16%, var(--soft));
+  color: #15803d;
+}
+
+.hub-status-tag.draft {
+  background: color-mix(in srgb, #ca8a04 16%, var(--soft));
+  color: #a16207;
+}
+
+.hub-card-title-wrap {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.hub-card-title-wrap h4 {
+  margin: 0;
+}
+
+.hub-card-empty {
+  margin: 0;
+  color: var(--faint);
+  font-size: 0.8rem;
+}
+
+.hub-set-active.is-current {
+  opacity: 0.72;
+  cursor: default;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .hub-search-wrap {
@@ -1790,21 +1852,6 @@
 }
 
 .hub-search::placeholder { color: var(--faint); }
-
-.hub-category {
-  height: 38px;
-  min-width: 148px;
-  margin: 0;
-  padding: 0 32px 0 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--soft) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%235c6b80' d='M1 1l5 5 5-5'/%3E%3C/svg%3E") no-repeat right 12px center;
-  color: var(--ink);
-  font-size: 0.84rem;
-  font-weight: 650;
-  appearance: none;
-  cursor: pointer;
-}
 
 .hub-filter {
   height: 32px;

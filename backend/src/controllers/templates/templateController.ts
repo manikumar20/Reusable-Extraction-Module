@@ -102,12 +102,21 @@ export const handleReplaceTemplateDocuments = async (request: Request, response:
   const files = Array.isArray(request.files) ? request.files : [];
   try {
     await requireTemplate(String(request.params.id));
+    let extracted: unknown[] = [];
+    try {
+      const raw = request.body?.extracted;
+      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+      if (Array.isArray(parsed)) extracted = parsed;
+    } catch {
+      extracted = [];
+    }
     const documents = await replaceTemplateDocuments(
       String(request.params.id),
-      files.map((file) => ({
+      files.map((file, index) => ({
         fileName: path.basename(file.originalname),
         storedName: path.basename(file.filename),
         mimeType: file.mimetype || "",
+        extractedFields: Array.isArray(extracted[index]) ? extracted[index] : [],
       })),
     );
     response.json({
@@ -116,6 +125,7 @@ export const handleReplaceTemplateDocuments = async (request: Request, response:
         fileName: doc.fileName,
         mimeType: doc.mimeType,
         createdAt: doc.createdAt,
+        extractedFields: doc.extractedFields,
       })),
     });
   } catch (error) {

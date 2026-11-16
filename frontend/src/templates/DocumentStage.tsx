@@ -60,8 +60,8 @@ export const DocumentStage = ({
     if (files.length) onAdd(files);
   };
 
-  const fieldCount = (document: SourceDocument) =>
-    (document.suggestions?.matched.length ?? 0) + (document.suggestions?.suggested.length ?? 0);
+  const fieldLabel = (count: number) =>
+    `${count} field${count === 1 ? "" : "s"} extracted`;
 
   return (
     <section className="tm-panel tm-canvas tm-canvas-list-only">
@@ -161,7 +161,7 @@ export const DocumentStage = ({
                   ) : document.status === "error" ? (
                     document.message || "Failed"
                   ) : (
-                    `Ready (${fieldCount(document)} fields)`
+                    fieldLabel(document.extractedCount ?? 0)
                   )}
                 </span>
               </button>

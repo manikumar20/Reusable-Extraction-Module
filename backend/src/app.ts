@@ -37,7 +37,7 @@ export const createApp = () => {
         callback(new Error("Not allowed by CORS"));
       },
       methods: ["GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"],
-      allowedHeaders: ["Content-Type", "Accept"],
+      allowedHeaders: ["Content-Type", "Accept", "Authorization"],
       exposedHeaders: ["Content-Disposition", "X-File-Name"],
       optionsSuccessStatus: HTTP_STATUS.NO_CONTENT,
     }),

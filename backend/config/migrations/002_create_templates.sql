@@ -29,5 +29,16 @@ CREATE TABLE IF NOT EXISTS template_fields (
   sample_h DOUBLE PRECISION
 );
 
-CREATE INDEX IF NOT EXISTS template_fields_order
-  ON template_fields (template_version_id, position);
+-- Only create the legacy index when that column still exists (schema may already use template_id).
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'template_fields'
+      AND column_name = 'template_version_id'
+  ) THEN
+    EXECUTE 'CREATE INDEX IF NOT EXISTS template_fields_order ON template_fields (template_version_id, position)';
+  END IF;
+END $$;

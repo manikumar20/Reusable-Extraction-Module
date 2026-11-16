@@ -15,11 +15,10 @@ type FieldListProps = {
 };
 
 const fieldDescription = (field: TemplateField) => {
-  if (field.hint?.trim()) return field.hint.trim();
-  if (field.sampleValue?.trim()) return `Sample: ${field.sampleValue.trim()}`;
-  if (field.level === "header") return "Header field from the document.";
-  if (field.level === "line") return "Line-item field from the document.";
-  return field.type ? `${field.type} field` : undefined;
+  if (field.sampleValue?.trim()) return field.sampleValue.trim();
+  if (field.suggested && field.hint?.trim()) return field.hint.trim();
+  if (!field.catalogKey && field.hint?.trim()) return field.hint.trim();
+  return undefined;
 };
 
 export const FieldList = ({
