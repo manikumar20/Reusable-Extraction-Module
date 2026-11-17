@@ -270,7 +270,16 @@
 }
 
 .tm-note { margin: 0; color: var(--tm-muted); }
-.tm-error { margin: 0 0 12px; color: var(--tm-danger); }
+.tm-error {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--danger);
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1.45;
+}
 
 .tm-builder { display: flex; flex-direction: column; gap: 14px; flex: 1; min-height: 0; }
 .tm-builder-head {
@@ -1476,7 +1485,7 @@
 .tm-studio .tm-box.tone-amber span { border-color: #fbbf24; color: #fde68a; }
 .tm-studio .tm-box.tone-emerald span { border-color: #34d399; color: #a7f3d0; }
 
-.tm-studio .tm-error { color: #fca5a5; }
+.tm-studio .tm-error { color: var(--danger); }
 
 /* ── Templates Hub (clean mockup layout) ──────────────────────── */
 .hub {

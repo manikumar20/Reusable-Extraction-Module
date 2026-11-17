@@ -26,8 +26,8 @@ const discard = (files: { path: string }[]) =>
   Promise.all(files.map((file) => fs.unlink(file.path).catch(() => undefined)));
 
 export const handleListTemplates = async (request: Request, response: Response) => {
-  const query = request.query as { category?: string; q?: string };
-  response.json(await listTemplatesForApi({ category: query.category, query: query.q }));
+  const query = request.query as { q?: string };
+  response.json(await listTemplatesForApi({ query: query.q }));
 };
 
 export const handleCreateTemplate = async (request: Request, response: Response) => {

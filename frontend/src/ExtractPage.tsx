@@ -2,16 +2,97 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { jobFromDocument } from "./jobFromDocument";
 import { Results } from "./Results";
 import { apiUrl } from "./services/api";
+import {
+  createExtractionBatch,
+  getExtractionBatch,
+  listExtractionBatches,
+  type ExtractionBatch,
+  type ExtractionBatchFile,
+} from "./services/batches";
 import { downloadDriveFile, listDriveFiles } from "./services/drive";
+import {
+  EXTRACTION_MAX_ATTEMPTS,
+  ExtractionSlotQueue,
+} from "./services/extractionSlotQueue";
 import { getActiveTemplate } from "./templates/api";
 import { rememberTemplate, type Template } from "./templates/types";
 import type { Catalog, ExtractedFieldRow, Job, ServerConfig, StoredDocument } from "./types";
-import { UploadPanel, type QueueItem } from "./UploadPanel";
-import { useJob } from "./useJob";
+import {
+  UploadPanel,
+  type QueueItem,
+} from "./UploadPanel";
+
+const statusFromBatch = (
+  status: ExtractionBatch["status"],
+): QueueItem["status"] => {
+  if (status === "Uploaded") return "uploaded";
+  if (status === "Processing") return "running";
+  if (status === "Completed") return "done";
+  if (status === "Cancelled") return "cancelled";
+  return "error";
+};
+
+const progressFromBatch = (status: ExtractionBatch["status"]) => {
+  if (status === "Completed") return 100;
+  if (status === "Processing") return 55;
+  if (status === "Uploaded") return 12;
+  return 0;
+};
+
+const queueItemFromBatch = (
+  batch: ExtractionBatch,
+  files: ExtractionBatchFile[] = [],
+  existing?: QueueItem,
+): QueueItem => {
+  const completedDocs = files
+    .map((file) => file.documentId)
+    .filter((id): id is number => typeof id === "number");
+  const documentIds =
+    completedDocs.length > 0 ? [...new Set(completedDocs)] : existing?.documentIds;
+  const label =
+    files.length === 1
+      ? files[0]!.originalName
+      : batch.jobName?.trim() ||
+        (batch.fileCount === 1 ? existing?.fileName || "1 file" : `${batch.fileCount} files`);
+  return {
+    id: existing?.id || `batch-${batch.id}`,
+    kind: "batch",
+    fileName: label,
+    fileSize: batch.zipSizeBytes,
+    status: statusFromBatch(batch.status),
+    progress: progressFromBatch(batch.status),
+    message: batch.errorMessage || undefined,
+    batchId: batch.id,
+    zipFileName: batch.zipFileName,
+    fileCount: batch.fileCount,
+    documentIds,
+    documentId: documentIds?.[0] ?? existing?.documentId,
+    fieldCount: documentIds?.length ?? existing?.fieldCount,
+    saved: existing?.saved,
+  };
+};
+
+const placeholderFile = (name: string) => new File([], name);
+
+const DISMISSED_BATCHES_KEY = "extractiq-dismissed-batches";
+
+const readDismissedBatches = () => {
+  try {
+    const raw = sessionStorage.getItem(DISMISSED_BATCHES_KEY);
+    const ids = raw ? (JSON.parse(raw) as unknown) : [];
+    return new Set(Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : []);
+  } catch {
+    return new Set<string>();
+  }
+};
+
+const writeDismissedBatches = (ids: Set<string>) => {
+  sessionStorage.setItem(DISMISSED_BATCHES_KEY, JSON.stringify([...ids]));
+};
 
 const fallbackJob = (item: QueueItem): Job => ({
   id: item.jobId || `queue-${item.id}`,
-  fileName: item.file.name,
+  fileName: item.file?.name || item.fileName || item.zipFileName || "Document",
   status: "done",
   phase: "done",
   progress: 100,
@@ -28,7 +109,6 @@ const fallbackJob = (item: QueueItem): Job => ({
 export const ExtractPage = () => {
   const [config, setConfig] = useState<ServerConfig | null>(null);
   const [catalog, setCatalog] = useState<Catalog | null>(null);
-  const [jobId, setJobId] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
   const [documents, setDocuments] = useState<StoredDocument[]>([]);
@@ -36,19 +116,19 @@ export const ExtractPage = () => {
   const [activeTemplate, setActiveTemplate] = useState<Template | null>(null);
   const [previewFile, setPreviewFile] = useState<File | null>(null);
   const [queue, setQueue] = useState<QueueItem[]>([]);
-  const [batchMode, setBatchMode] = useState(false);
   const [inspecting, setInspecting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [inspectFields, setInspectFields] = useState<ExtractedFieldRow[]>([]);
   const [inspectDocumentId, setInspectDocumentId] = useState<number | null>(null);
   const [inspectJobSnapshot, setInspectJobSnapshot] = useState<Job | null>(null);
-  const { job, liveError } = useJob(jobId);
-  const runningId = useRef<string | null>(null);
-  const chain = useRef<string[]>([]);
+  const dismissedBatches = useRef(readDismissedBatches());
   const queueRef = useRef(queue);
   const templateRef = useRef(activeTemplate);
-  const jobRef = useRef(job);
   const documentsRef = useRef(documents);
+  const slotQueueRef = useRef<ExtractionSlotQueue | null>(null);
+  const submitOneRef = useRef<
+    (item: QueueItem, attempt: number) => Promise<{ ok: boolean; settled?: boolean; errorMessage?: string }>
+  >(async () => ({ ok: false, errorMessage: "Not ready." }));
 
   useEffect(() => {
     queueRef.current = queue;
@@ -59,12 +139,57 @@ export const ExtractPage = () => {
   }, [activeTemplate]);
 
   useEffect(() => {
-    jobRef.current = job;
-  }, [job]);
-
-  useEffect(() => {
     documentsRef.current = documents;
   }, [documents]);
+
+  if (!slotQueueRef.current) {
+    slotQueueRef.current = new ExtractionSlotQueue({
+      getItems: () => queueRef.current,
+      processItem: (item, attempt) => {
+        const row = queueRef.current.find((entry) => entry.id === item.id);
+        if (!row) return Promise.resolve({ ok: false, errorMessage: "File left the queue." });
+        return submitOneRef.current(row, attempt);
+      },
+      requeueForRetry: (itemId, attempt, maxAttempts) => {
+        setQueue((current) => {
+          const row = current.find((entry) => entry.id === itemId);
+          if (!row) return current;
+          const rest = current.filter((entry) => entry.id !== itemId);
+          return [
+            ...rest,
+            {
+              ...row,
+              kind: "file",
+              status: "ready",
+              progress: 0,
+              batchId: undefined,
+              zipFileName: undefined,
+              permanentlyFailed: false,
+              attempts: attempt,
+              message: `Waiting to retry (${attempt}/${maxAttempts})…`,
+            },
+          ];
+        });
+      },
+      markPermanentlyFailed: (itemId, attempts, message) => {
+        setQueue((current) =>
+          current.map((row) =>
+            row.id === itemId
+              ? {
+                  ...row,
+                  status: "error",
+                  progress: 0,
+                  permanentlyFailed: true,
+                  attempts,
+                  message: message || `Failed after ${attempts} attempts.`,
+                }
+              : row,
+          ),
+        );
+      },
+    });
+  }
+  const slotQueue = slotQueueRef.current;
 
   const loadDocuments = useCallback(async () => {
     try {
@@ -76,6 +201,27 @@ export const ExtractPage = () => {
       // The upload page still works if the document list cannot be read.
     }
   }, []);
+
+  const mergeBatchIntoQueue = useCallback(
+    (batch: ExtractionBatch, files: ExtractionBatchFile[] = []) => {
+      if (dismissedBatches.current.has(batch.id)) return;
+      setQueue((current) => {
+        const existing = current.find((row) => row.batchId === batch.id);
+        const nextItem = {
+          ...queueItemFromBatch(batch, files, existing),
+          id: existing?.id || `batch-${batch.id}`,
+          file: existing?.file,
+          attempts: existing?.attempts,
+          permanentlyFailed: existing?.permanentlyFailed,
+        };
+        if (existing) {
+          return current.map((row) => (row.batchId === batch.id ? nextItem : row));
+        }
+        return [nextItem, ...current];
+      });
+    },
+    [],
+  );
 
   useEffect(() => {
     document.title = "Extract & Ingest · ExtractIQ";
@@ -125,163 +271,265 @@ export const ExtractPage = () => {
     };
   }, [loadDocuments]);
 
-  const startExtract = useCallback(
-    async (itemId: string) => {
-      setUploadError("");
+  useEffect(() => {
+    let cancelled = false;
+    const hydrateBatches = async () => {
+      try {
+        const batches = await listExtractionBatches();
+        if (cancelled) return;
+        const recent = batches.slice(0, 20);
+        const details = await Promise.all(
+          recent.map(async (batch) => {
+            try {
+              return await getExtractionBatch(batch.id);
+            } catch {
+              return { batch, files: [] as ExtractionBatchFile[] };
+            }
+          }),
+        );
+        if (cancelled) return;
+        const completedIds = new Set<number>();
+        try {
+          const response = await fetch(apiUrl("/documents"));
+          if (response.ok) {
+            const payload = (await response.json()) as { documents?: StoredDocument[] };
+            for (const document of payload.documents ?? []) completedIds.add(document.id);
+          }
+        } catch {
+          // Saved batches stay visible only if the library cannot be read.
+        }
+        if (cancelled) return;
+        setQueue((current) => {
+          const localReady = current.filter((row) => row.kind !== "batch" && !row.batchId);
+          const fromServer = details
+            .filter(({ batch, files }) => {
+              if (dismissedBatches.current.has(batch.id)) return false;
+              const documentIds = files
+                .map((file) => file.documentId)
+                .filter((id): id is number => typeof id === "number");
+              if (!documentIds.length) {
+                // Skip idle unsaved uploads that are not in-flight.
+                return batch.status === "Processing" || batch.status === "Failed";
+              }
+              return !documentIds.every((id) => completedIds.has(id));
+            })
+            .map(({ batch, files }) => {
+              const existing = current.find((row) => row.batchId === batch.id);
+              return queueItemFromBatch(batch, files, existing);
+            });
+          return [...localReady, ...fromServer];
+        });
+      } catch {
+        // Queue still works without prior batch history.
+      }
+    };
+    void hydrateBatches();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const needsDetail = queue.filter(
+      (item) =>
+        item.batchId &&
+        (item.status === "uploaded" ||
+          item.status === "running" ||
+          (item.status === "done" && !(item.documentIds?.length || item.documentId != null))),
+    );
+    if (!needsDetail.length) return;
+
+    const refresh = () => {
+      for (const item of needsDetail) {
+        void getExtractionBatch(item.batchId!)
+          .then((detail) => mergeBatchIntoQueue(detail.batch, detail.files))
+          .catch(() => undefined);
+      }
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 2500);
+    return () => window.clearInterval(timer);
+  }, [queue, mergeBatchIntoQueue]);
+
+  const submitOneFile = useCallback(
+    async (item: QueueItem, attempt: number) => {
       const template = templateRef.current;
       if (!template) {
         setUploadError("Set an active template under Templates before extracting.");
-        return;
+        return { ok: false as const, errorMessage: "Set an active template under Templates before extracting." };
       }
-      const snapshot = queueRef.current.find((row) => row.id === itemId);
-      if (!snapshot) return;
+      const file = item.file;
+      if (!file) {
+        return { ok: false as const, errorMessage: "File is missing from the queue." };
+      }
 
-      runningId.current = itemId;
+      setUploadError("");
       setUploading(true);
-      setPreviewFile(snapshot.file);
-      setInspecting(false);
       setQueue((current) =>
         current.map((row) =>
-          row.id === itemId ? { ...row, status: "running", progress: 4, message: undefined } : row,
+          row.id === item.id
+            ? {
+                ...row,
+                status: "running",
+                progress: 8,
+                attempts: attempt,
+                permanentlyFailed: false,
+                message:
+                  attempt > 1
+                    ? `Attempt ${attempt}/${EXTRACTION_MAX_ATTEMPTS} · Uploading…`
+                    : "Uploading…",
+              }
+            : row,
         ),
       );
 
       try {
-        const body = new FormData();
-        body.append("file", snapshot.file);
-        const fieldKey = (field: (typeof template.fields)[number]) =>
-          field.catalogKey?.trim() ||
-          field.name
-            .trim()
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, "_")
-            .replace(/^_+|_+$/g, "");
-        body.append(
-          "template",
-          JSON.stringify({
-            name: template.name,
-            headerKeys: template.fields
-              .filter((field) => field.level === "header")
-              .map(fieldKey)
-              .filter(Boolean),
-            lineKeys: template.fields
-              .filter((field) => field.level !== "header")
-              .map(fieldKey)
-              .filter(Boolean),
+        const detail = await createExtractionBatch({
+          files: [file],
+          templateId: template.id,
+        });
+        // Keep FIFO position and original id/file so retries stay possible.
+        setQueue((current) =>
+          current.map((row) => {
+            if (row.id !== item.id) return row;
+            return {
+              ...queueItemFromBatch(detail.batch, detail.files, row),
+              id: row.id,
+              file: row.file ?? file,
+              attempts: attempt,
+              permanentlyFailed: false,
+              message:
+                attempt > 1
+                  ? `Attempt ${attempt}/${EXTRACTION_MAX_ATTEMPTS} · Processing…`
+                  : detail.batch.errorMessage || undefined,
+            };
           }),
         );
-        const response = await fetch(apiUrl("/extract"), { method: "POST", body });
-        const payload = (await response.json().catch(() => null)) as {
-          id?: string;
-          document?: { id?: number };
-          error?: { message?: string };
-        } | null;
-        if (!response.ok || !payload?.id) {
-          throw new Error(payload?.error?.message || "Upload failed.");
+        if (detail.batch.status === "Processing" || detail.batch.status === "Uploaded") {
+          void getExtractionBatch(detail.batch.id)
+            .then((latest) => mergeBatchIntoQueue(latest.batch, latest.files))
+            .catch(() => undefined);
+        }
+        if (detail.batch.status === "Completed") {
+          void loadDocuments();
+          return { ok: true as const, settled: true };
+        }
+        if (detail.batch.status === "Failed" || detail.batch.status === "Cancelled") {
+          return {
+            ok: false as const,
+            errorMessage: detail.batch.errorMessage || "Extraction failed.",
+          };
         }
         void loadDocuments();
-        setJobId(payload.id);
-        setQueue((current) =>
-          current.map((row) =>
-            row.id === itemId
-              ? {
-                  ...row,
-                  jobId: payload.id,
-                  documentId:
-                    typeof payload.document?.id === "number" ? payload.document.id : row.documentId,
-                }
-              : row,
-          ),
-        );
+        return { ok: true as const, settled: false };
       } catch (error) {
-        runningId.current = null;
-        setUploading(false);
         const message = error instanceof Error ? error.message : "Upload failed.";
         setUploadError(message);
         setQueue((current) =>
           current.map((row) =>
-            row.id === itemId ? { ...row, status: "error", message } : row,
+            row.id === item.id
+              ? { ...row, status: "error", message, progress: 0, attempts: attempt }
+              : row,
           ),
         );
-        const nextId = chain.current.shift();
-        if (nextId) void startExtract(nextId);
+        return { ok: false as const, errorMessage: message };
+      } finally {
+        setUploading(false);
       }
     },
-    [loadDocuments],
+    [loadDocuments, mergeBatchIntoQueue],
   );
 
+  submitOneRef.current = submitOneFile;
+
+  // Release slots when in-flight items reach a terminal status (polled from the server).
   useEffect(() => {
-    if (!job || !runningId.current) return;
-    const itemId = runningId.current;
-    if (job.status === "running") {
-      setQueue((current) =>
-        current.map((item) =>
-          item.id === itemId
-            ? { ...item, status: "running", progress: job.progress, jobId: job.id }
-            : item,
-        ),
-      );
-      return;
+    for (const item of queue) {
+      if (!slotQueue.isAwaitingTerminal(item.id)) continue;
+      if (item.status === "done") {
+        slotQueue.notifyTerminal(item.id, "done");
+      } else if (item.status === "error" || item.status === "cancelled") {
+        if (item.permanentlyFailed) continue;
+        slotQueue.notifyTerminal(item.id, "failed", item.message);
+      }
     }
-    if (job.status === "done") {
-      const filledHeader = Object.values(job.header ?? {}).filter((value) => {
-        if (value == null) return false;
-        return String(value).trim() !== "";
-      }).length;
-      const fieldCount = filledHeader + job.lines.length;
-      const confidence = Math.min(99, 90 + Math.min(fieldCount, 9));
-      const result = structuredClone(job);
-      setQueue((current) =>
-        current.map((item) =>
-          item.id === itemId
-            ? {
-                ...item,
-                status: "done",
-                progress: 100,
-                jobId: job.id,
-                fieldCount,
-                confidence,
-                result,
-              }
-            : item,
-        ),
-      );
-      runningId.current = null;
-      setUploading(false);
-      const nextId = chain.current.shift();
-      if (nextId) void startExtract(nextId);
-      else void loadDocuments();
-      return;
-    }
-    if (job.status === "error") {
-      setQueue((current) =>
-        current.map((item) =>
-          item.id === itemId
-            ? {
-                ...item,
-                status: "error",
-                message: job.error?.message || "Extraction failed.",
-              }
-            : item,
-        ),
-      );
-      runningId.current = null;
-      setUploading(false);
-      const nextId = chain.current.shift();
-      if (nextId) void startExtract(nextId);
-    }
-  }, [job, loadDocuments, startExtract]);
+  }, [queue, slotQueue]);
+
+  const startExtract = useCallback(
+    (itemId: string) => {
+      const snapshot = queueRef.current.find((row) => row.id === itemId);
+      if (!snapshot?.file || snapshot.kind === "batch") return;
+      if (snapshot.permanentlyFailed) return;
+      slotQueue.schedule([itemId]);
+    },
+    [slotQueue],
+  );
+
+  const extractAll = useCallback(() => {
+    const ready = queueRef.current.filter(
+      (item) =>
+        item.status === "ready" &&
+        item.file &&
+        item.kind !== "batch" &&
+        !item.permanentlyFailed,
+    );
+    if (!ready.length) return;
+    slotQueue.schedule(ready.map((item) => item.id));
+  }, [slotQueue]);
 
   const saveToDocuments = useCallback(async () => {
-    const ids = queueRef.current
-      .filter(
-        (item) => item.status === "done" && !item.saved && typeof item.documentId === "number",
-      )
-      .map((item) => item.documentId as number);
+    const collectIds = (items: QueueItem[]) =>
+      [
+        ...new Set(
+          items.flatMap((item) => {
+            const fromList = item.documentIds ?? [];
+            return typeof item.documentId === "number"
+              ? [...fromList, item.documentId]
+              : fromList;
+          }),
+        ),
+      ];
+
+    const targets = queueRef.current.filter((item) => {
+      if (item.saved) return false;
+      if (item.status === "done") return true;
+      return item.status === "error" && Boolean(item.batchId);
+    });
+    let ids = collectIds(targets);
+
     if (!ids.length) {
-      setUploadError("Extract the files, then save them to Documents.");
-      return;
+      const pending = targets.filter((item) => item.batchId);
+      if (!pending.length) {
+        setUploadError("Extract the files, then save them to Documents.");
+        return;
+      }
+      setUploadError("Loading extracted documents…");
+      const details = await Promise.all(
+        pending.map((item) =>
+          getExtractionBatch(item.batchId!)
+            .then((detail) => {
+              mergeBatchIntoQueue(detail.batch, detail.files);
+              return detail;
+            })
+            .catch(() => null),
+        ),
+      );
+      ids = [
+        ...new Set(
+          details.flatMap((detail) =>
+            (detail?.files ?? [])
+              .map((file) => file.documentId)
+              .filter((id): id is number => typeof id === "number"),
+          ),
+        ),
+      ];
+      if (!ids.length) {
+        setUploadError("Extracted documents are not ready yet. Wait for processing to finish.");
+        return;
+      }
     }
+
+    const targetIds = new Set(targets.map((item) => item.id));
     setSaving(true);
     setUploadError("");
     try {
@@ -291,20 +539,38 @@ export const ExtractPage = () => {
         body: JSON.stringify({ ids }),
       });
       if (!response.ok) throw new Error("Documents could not be saved.");
+      const savedBatchIds = targets
+        .map((item) => item.batchId)
+        .filter((id): id is string => Boolean(id));
+      if (savedBatchIds.length) {
+        const nextDismissed = new Set(dismissedBatches.current);
+        for (const batchId of savedBatchIds) nextDismissed.add(batchId);
+        dismissedBatches.current = nextDismissed;
+        writeDismissedBatches(nextDismissed);
+      }
       setQueue((current) =>
-        current.map((item) =>
-          item.status === "done" && item.documentId != null && ids.includes(item.documentId)
-            ? { ...item, saved: true }
-            : item,
-        ),
+        current.filter((item) => {
+          if (item.saved || targetIds.has(item.id)) return false;
+          const itemIds = [
+            ...(item.documentIds ?? []),
+            ...(typeof item.documentId === "number" ? [item.documentId] : []),
+          ];
+          return !itemIds.some((id) => ids.includes(id));
+        }),
       );
+      setInspecting(false);
+      setPreviewFile(null);
+      setInspectFields([]);
+      setInspectDocumentId(null);
+      setInspectJobSnapshot(null);
+      setUploadError("");
       await loadDocuments();
     } catch (error) {
       setUploadError(error instanceof Error ? error.message : "Documents could not be saved.");
     } finally {
       setSaving(false);
     }
-  }, [loadDocuments]);
+  }, [loadDocuments, mergeBatchIntoQueue]);
 
   const importFromDrive = useCallback(async (url: string) => {
     setUploadError("");
@@ -328,7 +594,10 @@ export const ExtractPage = () => {
       ...current,
       ...files.map((file) => ({
         id: crypto.randomUUID(),
+        kind: "file" as const,
         file,
+        fileName: file.name,
+        fileSize: file.size,
         status: "ready" as const,
         progress: 0,
       })),
@@ -346,7 +615,6 @@ export const ExtractPage = () => {
     void loadDocuments();
   }, [loadDocuments]);
 
-  /** Open Inspect Results immediately from the queue item — no waiting on PDF/network. */
   const openInspect = useCallback((itemId: string) => {
     const item = queueRef.current.find((row) => row.id === itemId);
     if (!item) return;
@@ -355,26 +623,21 @@ export const ExtractPage = () => {
     setUploadError("");
     setInspectFields([]);
 
-    const live =
-      jobRef.current && item.jobId && jobRef.current.id === item.jobId ? jobRef.current : null;
-    const snapshot = item.result ?? live ?? fallbackJob(item);
+    const snapshot = item.result ?? fallbackJob(item);
     setInspectJobSnapshot(snapshot);
-    setPreviewFile(item.file);
-    if (item.jobId) setJobId(item.jobId);
+    setPreviewFile(item.file ?? placeholderFile(item.fileName || item.zipFileName || "Document"));
 
     const docs = documentsRef.current;
     const matched =
       (item.documentId != null ? docs.find((document) => document.id === item.documentId) : null) ||
       docs.find(
         (document) =>
-          document.fileName === item.file.name &&
+          document.fileName === (item.file?.name || item.fileName) &&
           (document.status || "").toLowerCase() === "completed",
       ) ||
       null;
     const documentId = item.documentId ?? matched?.id ?? null;
     setInspectDocumentId(documentId);
-
-    // Show Results now — network enrichment happens after paint.
     setInspecting(true);
 
     void (async () => {
@@ -389,24 +652,11 @@ export const ExtractPage = () => {
             .catch(() => null);
           const found = (latest?.documents ?? []).find(
             (document) =>
-              document.fileName === item.file.name &&
+              document.fileName === (item.file?.name || item.fileName) &&
               (document.status || "").toLowerCase() === "completed",
           );
           resolvedId = found?.id ?? null;
           if (resolvedId != null) setInspectDocumentId(resolvedId);
-        }
-
-        if (!item.result && item.jobId && !live) {
-          const response = await fetch(apiUrl(`/extract/${item.jobId}`));
-          if (response.ok) {
-            const payload = (await response.json()) as Job;
-            if (payload?.id) {
-              setInspectJobSnapshot(payload);
-              setQueue((current) =>
-                current.map((row) => (row.id === itemId ? { ...row, result: payload } : row)),
-              );
-            }
-          }
         }
 
         if (resolvedId == null) return;
@@ -443,24 +693,23 @@ export const ExtractPage = () => {
       documents.find((document) => document.id === inspectDocumentId) ??
       ({
         id: inspectDocumentId,
-        fileName: previewFile?.name || inspectJobSnapshot?.fileName || job?.fileName || "Document",
+        fileName: previewFile?.name || inspectJobSnapshot?.fileName || "Document",
         documentType: "Document",
         mimeType: previewFile?.type || "application/octet-stream",
         uploadedAt: new Date().toISOString(),
         status: "Completed",
       } satisfies StoredDocument)
     );
-  }, [documents, inspectDocumentId, inspectJobSnapshot?.fileName, job?.fileName, previewFile]);
+  }, [documents, inspectDocumentId, inspectJobSnapshot?.fileName, previewFile]);
 
   const reviewJob = useMemo(() => {
     if (inspectFields.length > 0 && inspectDocument) {
       return jobFromDocument(inspectDocument, inspectFields);
     }
     if (inspectJobSnapshot) return inspectJobSnapshot;
-    if (job) return job;
     if (inspectDocument) return jobFromDocument(inspectDocument, inspectFields);
     return null;
-  }, [inspectDocument, inspectFields, inspectJobSnapshot, job]);
+  }, [inspectDocument, inspectFields, inspectJobSnapshot]);
 
   return (
     <main
@@ -479,43 +728,44 @@ export const ExtractPage = () => {
       {!inspecting && (
         <UploadPanel
           config={config}
-          job={job}
+          job={null}
           uploading={uploading}
           uploadError={uploadError}
-          liveError={liveError}
+          liveError=""
           activeTemplate={activeTemplate}
           queue={queue}
-          batchMode={batchMode}
           saving={saving}
-          onBatchModeChange={setBatchMode}
           onAddFiles={(files) => {
             setUploadError("");
             setQueue((current) => [
               ...current,
               ...files.map((file) => ({
                 id: crypto.randomUUID(),
+                kind: "file" as const,
                 file,
+                fileName: file.name,
+                fileSize: file.size,
                 status: "ready" as const,
                 progress: 0,
               })),
             ]);
           }}
-          onExtract={(itemId) => {
-            if (runningId.current) return;
-            void startExtract(itemId);
-          }}
-          onExtractAll={() => {
-            const ready = queue.filter((item) => item.status === "ready").map((item) => item.id);
-            if (!ready.length || runningId.current) return;
-            const [first, ...rest] = ready;
-            chain.current = rest;
-            if (first) void startExtract(first);
-          }}
+          onExtract={startExtract}
+          onExtractAll={extractAll}
           onSave={() => void saveToDocuments()}
           onImportDrive={importFromDrive}
           onInspect={openInspect}
           onRemove={(itemId) => {
-            setQueue((current) => current.filter((item) => item.id !== itemId));
+            const item = queueRef.current.find((row) => row.id === itemId);
+            if (item?.batchId) {
+              const nextDismissed = new Set(dismissedBatches.current);
+              nextDismissed.add(item.batchId);
+              dismissedBatches.current = nextDismissed;
+              writeDismissedBatches(nextDismissed);
+            }
+            slotQueue.forget(itemId);
+            setQueue((current) => current.filter((row) => row.id !== itemId));
+            void slotQueue.pump();
           }}
         />
       )}
@@ -538,9 +788,9 @@ export const ExtractPage = () => {
       {inspecting && !reviewJob && (
         <div className="stand" style={{ display: "grid", gap: 12, maxWidth: 420 }}>
           <p className="error-text" role="alert">
-            Could not open Inspect Results for this file.
+            Could not open results for this file.
           </p>
-          <button type="button" className="app-btn-ghost" onClick={closeInspect}>
+          <button type="button" className="app-btn-primary" onClick={closeInspect}>
             Back to Ingest Queue
           </button>
         </div>

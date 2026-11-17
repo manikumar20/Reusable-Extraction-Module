@@ -1,8 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent } from "react";
 import {
   ChevronLeft,
   ChevronRight,
-  Copy,
   Download,
   FileSpreadsheet,
   FileJson,
@@ -11,7 +10,6 @@ import {
   Plus,
   RotateCcw,
   Search,
-  Trash2,
   CheckCircle2,
   ArrowLeft,
 } from "lucide-react";
@@ -62,6 +60,19 @@ type ReviewItem = {
   /** Persisted extracted_fields.id when saved on the document. */
   fieldId?: string;
   source?: string;
+};
+
+const ITEM_PAGE_SIZE = 15;
+
+const pageRange = (from: number, to: number) =>
+  Array.from({ length: to - from + 1 }, (_, index) => from + index);
+
+const paginationItems = (current: number, totalPages: number): Array<number | "ellipsis"> => {
+  if (totalPages <= 7) return pageRange(1, totalPages);
+  if (current <= 3 || current >= totalPages - 2) {
+    return [...pageRange(1, 3), "ellipsis", ...pageRange(totalPages - 2, totalPages)];
+  }
+  return [1, "ellipsis", current - 1, current, current + 1, "ellipsis", totalPages];
 };
 
 const typedText = new WeakMap<ExtractedLine, Map<string, string>>();
@@ -231,6 +242,9 @@ export const Results = ({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [approved, setApproved] = useState(false);
   const [query, setQuery] = useState("");
+  const [itemPage, setItemPage] = useState(1);
+  const [gotoPage, setGotoPage] = useState("1");
+  const [valueTip, setValueTip] = useState<{ text: string; top: number; left: number; above: boolean } | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [docxError, setDocxError] = useState("");
@@ -284,6 +298,7 @@ export const Results = ({
     setSelectedId(null);
     setApproved(false);
     setQuery("");
+    setItemPage(1);
     setPage(1);
     setZoom(1);
     setExportOpen(false);
@@ -402,6 +417,64 @@ export const Results = ({
     });
   }, [displayItems, query]);
 
+  const itemPageCount = Math.max(1, Math.ceil(visibleItems.length / ITEM_PAGE_SIZE));
+  const itemPageSafe = Math.min(itemPage, itemPageCount);
+  const pagedItems = visibleItems.slice(
+    (itemPageSafe - 1) * ITEM_PAGE_SIZE,
+    itemPageSafe * ITEM_PAGE_SIZE,
+  );
+
+  useEffect(() => {
+    setGotoPage(String(itemPageSafe));
+    if (itemPage !== itemPageSafe) setItemPage(itemPageSafe);
+  }, [itemPage, itemPageSafe]);
+
+  const jumpToItemPage = (raw: string) => {
+    const next = Number(raw);
+    if (!Number.isInteger(next) || next < 1) {
+      setGotoPage(String(itemPageSafe));
+      return;
+    }
+    setItemPage(Math.min(next, itemPageCount));
+  };
+
+  const onGotoSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const input = event.currentTarget.elements.namedItem("extracted-goto-page");
+    jumpToItemPage(input instanceof HTMLInputElement ? input.value : gotoPage);
+  };
+
+  const showValueTip = (event: MouseEvent<HTMLElement>, text: string) => {
+    const value = text.trim();
+    const input = event.currentTarget.querySelector("input");
+    if (!value || !input) {
+      setValueTip(null);
+      return;
+    }
+    const style = getComputedStyle(input);
+    const probe = document.createElement("span");
+    probe.textContent = input.value;
+    probe.style.position = "fixed";
+    probe.style.left = "-9999px";
+    probe.style.whiteSpace = "nowrap";
+    probe.style.font = style.font;
+    probe.style.letterSpacing = style.letterSpacing;
+    document.body.appendChild(probe);
+    const truncated = probe.offsetWidth > input.clientWidth + 1;
+    probe.remove();
+    if (!truncated) {
+      setValueTip(null);
+      return;
+    }
+    const rect = input.getBoundingClientRect();
+    const above = rect.bottom + 140 > window.innerHeight;
+    setValueTip({
+      text: value,
+      top: above ? rect.top - 8 : rect.bottom + 8,
+      left: Math.max(12, Math.min(rect.left, window.innerWidth - 392)),
+      above,
+    });
+  };
   const activeItems = displayItems.filter(
     (item) => item.status !== ("deleted" as ReviewItem["status"]),
   );
@@ -548,34 +621,6 @@ export const Results = ({
     })();
   };
 
-  const removeItem = (id: string) => {
-    const target = displayItems.find((item) => item.id === id);
-    const next = displayItems
-      .filter((item) => item.id !== id)
-      .map((item, index) => ({
-        ...item,
-        itemNumber: index + 1,
-      }));
-    setItems(next);
-    if (selectedId === id) setSelectedId(next[0]?.id ?? null);
-    if (!documentId || !target?.fieldId) return;
-    const pending = persistTimers.current.get(target.fieldId);
-    if (pending) {
-      window.clearTimeout(pending);
-      persistTimers.current.delete(target.fieldId);
-    }
-    void (async () => {
-      try {
-        await fetch(apiUrl(`/documents/${documentId}/fields/${target.fieldId}`), {
-          method: "DELETE",
-        });
-        onFieldsChanged?.();
-      } catch {
-        /* already removed locally */
-      }
-    })();
-  };
-
   const buildExportPayload = () => {
     const live = displayItems.filter(
       (item) => item.status !== ("deleted" as ReviewItem["status"]),
@@ -685,59 +730,60 @@ export const Results = ({
   const sheetWidth = Math.max(240, Math.round(fitWidth * zoom));
 
   return (
-    <section className="flex h-[calc(100vh-88px)] min-h-0 flex-1 flex-col gap-4 overflow-hidden text-[var(--ink)] review-results">
-      <header className="flex flex-wrap items-center gap-3 rounded-2xl border border-[var(--line)] bg-[var(--sheet)] px-3.5 py-3 shadow-sm">
+    <section className="review-results flex min-h-0 flex-1 flex-col gap-1.5 overflow-hidden text-[var(--ink)]">
+      <header className="review-results-top flex shrink-0 flex-nowrap items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--sheet)] px-2.5 py-1.5 shadow-sm">
         <button
           type="button"
           onClick={onBack}
           aria-label={backLabel}
           title={backLabel}
-          className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-[var(--line-strong)] bg-[var(--soft)] text-[var(--ink)] transition hover:bg-[var(--hover)]"
+          className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-[var(--line-strong)] bg-[var(--soft)] text-[var(--ink)] transition hover:bg-[var(--hover)]"
         >
-          <ArrowLeft className="h-4 w-4" />
+          <ArrowLeft className="h-3.5 w-3.5" />
         </button>
 
-        <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]">
-          <FileText className="h-5 w-5" />
+        <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[var(--accent-soft)] text-[var(--accent)]">
+          <FileText className="h-4 w-4" />
         </div>
 
-        <div className="min-w-0 flex-1">
-          <h1 className="truncate text-[15px] font-extrabold tracking-[-0.02em] text-[var(--ink-strong)]" title={job.fileName}>
+        <div className="flex min-w-0 flex-1 flex-nowrap items-center gap-2 overflow-hidden">
+          <h1
+            className="min-w-0 truncate text-[13px] font-bold tracking-[-0.02em] text-[var(--ink-strong)]"
+            title={job.fileName}
+          >
             {job.fileName}
           </h1>
-          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-            <span className="rounded-full bg-[var(--hover)] px-2.5 py-0.5 text-[11px] font-bold text-[var(--ink-soft)] ring-1 ring-[var(--line)]">
-              {documentType}
-            </span>
-            <span className="rounded-full bg-sky-50 px-2.5 py-0.5 text-[11px] font-bold text-sky-700 ring-1 ring-sky-200">
-              {activeItems.length} items
-            </span>
-            <span
-              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-bold ring-1 ${
-                statusLabel === "Completed" || statusLabel === "Approved"
-                  ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
-                  : statusLabel === "Processing"
-                    ? "bg-amber-50 text-amber-700 ring-amber-200"
-                    : "bg-rose-50 text-rose-700 ring-rose-200"
-              }`}
-            >
-              {(statusLabel === "Completed" || statusLabel === "Approved") && (
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden="true" />
-              )}
-              {statusLabel}
-            </span>
-          </div>
+          <span className="shrink-0 rounded-full bg-[var(--hover)] px-2 py-0.5 text-[10px] font-bold text-[var(--ink-soft)] ring-1 ring-[var(--line)]">
+            {documentType}
+          </span>
+          <span className="shrink-0 rounded-full bg-sky-50 px-2 py-0.5 text-[10px] font-bold text-sky-700 ring-1 ring-sky-200">
+            {activeItems.length} items
+          </span>
+          <span
+            className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${
+              statusLabel === "Completed" || statusLabel === "Approved"
+                ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
+                : statusLabel === "Processing"
+                  ? "bg-amber-50 text-amber-700 ring-amber-200"
+                  : "bg-rose-50 text-rose-700 ring-rose-200"
+            }`}
+          >
+            {(statusLabel === "Completed" || statusLabel === "Approved") && (
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden="true" />
+            )}
+            {statusLabel}
+          </span>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex shrink-0 flex-nowrap items-center gap-1.5">
           <div className="relative">
-        <button
-          type="button"
+            <button
+              type="button"
               disabled={job.status !== "done"}
               onClick={() => setExportOpen((open) => !open)}
               className="app-btn-ghost"
             >
-              <Download className="h-4 w-4" />
+              <Download />
               Export
             </button>
             {exportOpen && (
@@ -750,12 +796,12 @@ export const Results = ({
                 </button>
                 <button type="button" className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-[var(--hover)]" onClick={exportExcel}>
                   <FileSpreadsheet className="h-4 w-4 text-emerald-600" /> Excel
-        </button>
+                </button>
               </div>
             )}
           </div>
-        <button
-          type="button"
+          <button
+            type="button"
             disabled={job.status !== "done"}
             onClick={() => {
               setApproved(true);
@@ -769,22 +815,22 @@ export const Results = ({
             }}
             className="app-btn-primary"
           >
-            <CheckCircle2 className="h-4 w-4" />
+            <CheckCircle2 />
             Confirm &amp; approve data
-        </button>
-      </div>
+          </button>
+        </div>
       </header>
 
-      <div ref={shellRef} className="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-hidden lg:grid-cols-2">
+      <div ref={shellRef} className="review-results-grids grid min-h-0 flex-1 grid-cols-1 gap-2 overflow-hidden lg:grid-cols-2">
         <section
           ref={(node) => {
             leftPaneRef.current = node;
           }}
-          className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--sheet)] shadow-sm"
+          className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--sheet)] shadow-sm"
           aria-label="Document viewer"
         >
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--line)] bg-[var(--soft)] px-4 py-3">
-            <span className="rounded-lg bg-[var(--accent-soft)] px-2.5 py-1 text-[11px] font-extrabold uppercase tracking-[0.06em] text-[var(--accent)]">
+          <div className="flex shrink-0 flex-nowrap items-center justify-between gap-2 border-b border-[var(--line)] bg-[var(--soft)] px-3 py-1.5">
+            <span className="rounded-lg bg-[var(--accent-soft)] px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-[0.06em] text-[var(--accent)]">
               Document
             </span>
             <div className="inline-flex items-center gap-1">
@@ -841,7 +887,7 @@ export const Results = ({
 
           <div
             ref={viewerRef}
-            className="doc-scroll-pane relative min-h-0 flex-1 overflow-auto overscroll-contain bg-[var(--soft)] p-4"
+            className="doc-scroll-pane relative min-h-0 flex-1 overflow-auto overscroll-contain bg-[var(--soft)] p-3"
             onScroll={() => {
               if (previewKind !== "pdf" || pages <= 1) return;
               const root = viewerRef.current;
@@ -943,29 +989,36 @@ export const Results = ({
         </section>
 
         <aside
-          className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--sheet)] shadow-sm"
+          className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--sheet)] shadow-sm"
           aria-label="Extracted fields"
         >
-          <div className="flex flex-wrap items-center gap-2 border-b border-[var(--line)] bg-[var(--soft)] px-4 py-3">
-            <span className="rounded-lg bg-[var(--accent-soft)] px-2.5 py-1 text-[11px] font-extrabold uppercase tracking-[0.06em] text-[var(--accent)]">
+          <div className="flex shrink-0 flex-nowrap items-center gap-2 border-b border-[var(--line)] bg-[var(--soft)] px-3 py-1.5">
+            <span className="shrink-0 rounded-lg bg-[var(--accent-soft)] px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-[0.06em] text-[var(--accent)]">
               Extracted data
             </span>
-            <label className="relative min-w-[160px] flex-1">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--faint)]" />
+            <label className="relative min-w-[140px] flex-1">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--faint)]" />
               <input
                 value={query}
-                onChange={(event) => setQuery(event.target.value)}
+                onChange={(event) => {
+                  setQuery(event.target.value);
+                  setItemPage(1);
+                }}
                 placeholder="Search fields…"
-                className="h-10 w-full rounded-xl border border-[var(--line)] bg-[var(--sheet)] pl-8 pr-3 text-sm outline-none transition focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)]"
+                className="h-8 w-full rounded-lg border border-[var(--line)] bg-[var(--sheet)] pl-8 pr-3 text-sm outline-none transition focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)]"
               />
             </label>
             <button type="button" onClick={addItem} className="app-btn-primary has-plus">
               <span className="app-btn-plus" aria-hidden="true">+</span>
               Add New Item
             </button>
-            </div>
+          </div>
 
-          <div ref={tableRef} className="doc-scroll-pane min-h-0 flex-1 overflow-auto overscroll-contain px-4 py-4">
+          <div
+            ref={tableRef}
+            className="doc-scroll-pane min-h-0 flex-1 overflow-auto overscroll-contain px-3 pt-2 pb-0"
+            onScroll={() => setValueTip(null)}
+          >
             {visibleItems.length === 0 ? (
               <div className="grid min-h-[220px] place-items-center px-4 py-12 text-center">
                 <div>
@@ -986,102 +1039,126 @@ export const Results = ({
                 </div>
               </div>
             ) : (
-              <ul className="m-0 grid list-none gap-2 p-0">
-                {visibleItems.map((item) => {
-                  const active = selectedId === item.id;
-                  return (
-                    <li key={item.id}>
-                      <article
-                        data-item={item.id}
-                        onClick={() => selectItem(item)}
-                        className={`flex items-center gap-3 rounded-full border bg-[var(--sheet)] px-3 py-1.5 transition ${
-                          active
-                            ? "border-[var(--accent)] shadow-sm"
-                            : "border-[var(--line)] hover:border-[var(--line-strong)]"
-                        }`}
-                      >
-                        <span className="inline-grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[var(--accent)] text-[11px] font-extrabold tracking-tight text-white">
-                          {String(item.itemNumber).padStart(2, "0")}
-                        </span>
-
-                        <input
-                          value={item.label}
-                          aria-label="Field name"
-                          onClick={(event) => event.stopPropagation()}
-                          onChange={(event) => editItem(item.id, { label: event.target.value })}
-                          className="w-[150px] shrink-0 truncate rounded-full border border-transparent bg-transparent px-2 py-0 text-[13px] font-extrabold leading-tight text-[var(--ink-strong)] outline-none transition hover:border-[var(--line)] focus:border-[var(--accent)] focus:bg-[var(--soft)]"
-                        />
-
-                        <span
-                          className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-[0.04em] ${
-                            (item.source || "AI").toUpperCase() === "MANUAL"
-                              ? "bg-amber-100 text-amber-800"
-                              : (item.source || "AI").toUpperCase() === "SUGGESTED"
-                                ? "bg-violet-100 text-violet-800"
-                                : "bg-sky-100 text-sky-800"
-                          }`}
-                          title={item.details}
+              <table className="docs-table extracted-fields">
+                  <thead>
+                    <tr>
+                      <th>S.No</th>
+                      <th>Field</th>
+                      <th>Value</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pagedItems.map((item) => (
+                        <tr
+                          key={item.id}
+                          data-item={item.id}
+                          className={selectedId === item.id ? "docs-row is-open" : "docs-row"}
+                          onClick={() => selectItem(item)}
                         >
-                          {(item.source || "AI").toUpperCase() === "MANUAL"
-                            ? "Manual"
-                            : (item.source || "AI").toUpperCase() === "SUGGESTED"
-                              ? "Suggested"
-                              : "AI"}
-                        </span>
-
-                        <input
-                          value={item.value}
-                          aria-label={`${item.label || "Field"} value`}
-                          onClick={(event) => event.stopPropagation()}
-                          onChange={(event) =>
-                            editItem(item.id, { value: event.target.value, sourceSnippet: event.target.value })
-                          }
-                          placeholder="No value extracted"
-                          className="h-8 min-w-0 flex-1 truncate rounded-full border border-[var(--line)] bg-[var(--soft)] px-4 text-[13px] font-bold text-[var(--ink-strong)] outline-none placeholder:font-medium placeholder:text-[var(--faint)] transition hover:border-[var(--line-strong)] focus:border-[var(--accent)] focus:bg-[var(--sheet)] focus:ring-2 focus:ring-[var(--accent-soft)]"
-                        />
-
-                        <div className="flex shrink-0 items-center gap-1.5">
-                          <button
-                            type="button"
-                            title="Copy value"
-                            aria-label={`Copy ${item.label || "value"}`}
-                            className="grid h-8 w-8 place-items-center rounded-full border border-[var(--line)] bg-[linear-gradient(180deg,var(--sheet),var(--soft))] text-[var(--accent)] shadow-[0_1px_0_rgba(255,255,255,0.65)_inset] transition hover:border-[var(--accent)] hover:bg-[var(--accent-soft)] hover:text-[var(--accent)]"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void navigator.clipboard?.writeText(item.value || item.label);
-                            }}
+                          <td>
+                            <span className="extracted-sno">{String(item.itemNumber).padStart(2, "0")}</span>
+                          </td>
+                          <td>
+                            <input
+                              value={item.label}
+                              aria-label="Field name"
+                              onClick={(event) => event.stopPropagation()}
+                              onChange={(event) => editItem(item.id, { label: event.target.value })}
+                              className="docs-cell-input docs-file-name"
+                            />
+                          </td>
+                          <td
+                            onMouseEnter={(event) => showValueTip(event, item.value)}
+                            onMouseLeave={() => setValueTip(null)}
                           >
-                            <Copy className="h-3.5 w-3.5" strokeWidth={2} />
-                          </button>
-        <button
-          type="button"
-                            title="Delete field"
-                            aria-label={`Delete ${item.label || "field"}`}
-                            className="grid h-8 w-8 place-items-center rounded-full border border-[var(--line)] bg-[linear-gradient(180deg,var(--sheet),var(--soft))] text-[var(--muted)] shadow-[0_1px_0_rgba(255,255,255,0.65)_inset] transition hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600"
-          onClick={(event) => {
-            event.stopPropagation();
-                              removeItem(item.id);
-          }}
-        >
-                            <Trash2 className="h-3.5 w-3.5" strokeWidth={2} />
-        </button>
-      </div>
-                      </article>
-                    </li>
-                  );
-                })}
-              </ul>
+                            <input
+                              value={item.value}
+                              aria-label={`${item.label || "Field"} value`}
+                              onClick={(event) => event.stopPropagation()}
+                              onChange={(event) =>
+                                editItem(item.id, { value: event.target.value, sourceSnippet: event.target.value })
+                              }
+                              placeholder="No value extracted"
+                              className="docs-cell-input"
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
             )}
           </div>
 
-          {selected ? (
-            <div className="border-t border-[var(--line)] bg-[var(--soft)] px-4 py-2.5 text-xs text-[var(--muted)]">
-              Focused: <span className="font-semibold text-[var(--ink)]">{selected.label}</span>
-              {approved ? " · Approved" : ""}
-        </div>
-      ) : null}
         </aside>
       </div>
+
+      {valueTip ? (
+        <span
+          className={valueTip.above ? "extracted-value-tip above" : "extracted-value-tip"}
+          style={{ top: valueTip.top, left: valueTip.left }}
+        >
+          {valueTip.text}
+        </span>
+      ) : null}
+
+      {visibleItems.length > 0 && (
+        <div className="docs-pagination shrink-0">
+          <div className="docs-page-size">
+            <span>{ITEM_PAGE_SIZE}</span>
+            <span>Items per page</span>
+          </div>
+          <div className="docs-page-numbers">
+            <button
+              type="button"
+              aria-label="Previous page"
+              disabled={itemPageSafe <= 1}
+              onClick={() => setItemPage(itemPageSafe - 1)}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M15 6 9 12l6 6" />
+              </svg>
+            </button>
+            {paginationItems(itemPageSafe, itemPageCount).map((item, index) =>
+              item === "ellipsis" ? (
+                <span key={`ellipsis-${index}`} className="docs-page-ellipsis">
+                  …
+                </span>
+              ) : (
+                <button
+                  key={item}
+                  type="button"
+                  className="docs-page-num"
+                  aria-current={item === itemPageSafe ? "page" : undefined}
+                  onClick={() => setItemPage(item)}
+                >
+                  {item}
+                </button>
+              ),
+            )}
+            <button
+              type="button"
+              aria-label="Next page"
+              disabled={itemPageSafe >= itemPageCount}
+              onClick={() => setItemPage(itemPageSafe + 1)}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m9 6 6 6-6 6" />
+              </svg>
+            </button>
+          </div>
+          <form className="docs-page-goto" onSubmit={onGotoSubmit}>
+            <label htmlFor="extracted-goto-page">Go to page</label>
+            <input
+              id="extracted-goto-page"
+              name="extracted-goto-page"
+              value={gotoPage}
+              inputMode="numeric"
+              onChange={(event) => setGotoPage(event.target.value)}
+              onBlur={(event) => jumpToItemPage(event.target.value)}
+            />
+          </form>
+        </div>
+      )}
     </section>
   );
 };

@@ -4,6 +4,7 @@ const FILE_KIND: Record<string, string> = {
   ".docx": "Word",
   ".xls": "Excel",
   ".xlsx": "Excel",
+  ".csv": "CSV",
   ".txt": "Text",
   ".jpg": "Image",
   ".jpeg": "Image",

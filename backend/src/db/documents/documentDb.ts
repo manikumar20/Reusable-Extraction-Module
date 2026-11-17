@@ -15,6 +15,9 @@ export type StoredDocument = {
   sources: string[];
   totalFields: number;
   fields: { fieldName: string; fieldValue: string }[];
+  templateId: number | null;
+  templateName: string | null;
+  templateNumber: number | null;
 };
 
 export type ExtractedField = {
@@ -40,6 +43,9 @@ type DocumentRow = {
   sources?: string[] | null;
   total_fields: string | number;
   fields?: { fieldName: string; fieldValue: string }[] | string | null;
+  template_id?: number | string | null;
+  template_name?: string | null;
+  template_number?: number | string | null;
 };
 
 type FieldRow = {
@@ -82,6 +88,9 @@ const mapDocument = (row: DocumentRow): StoredDocument => ({
   sources: mapSources(row),
   totalFields: Number(row.total_fields) || 0,
   fields: mapFieldPreview(row.fields),
+  templateId: row.template_id == null || row.template_id === "" ? null : Number(row.template_id),
+  templateName: row.template_name || null,
+  templateNumber: row.template_number == null || row.template_number === "" ? null : Number(row.template_number),
 });
 
 const mapFieldPreview = (value: DocumentRow["fields"]) => {
@@ -185,7 +194,8 @@ export const publishDocuments = async (ids: number[]) => {
   const { rows } = await getPool().query<{ id: number }>(
     `
       UPDATE documents
-      SET status = 'Completed'
+      SET status = CASE WHEN status = 'Failed' THEN 'Failed' ELSE 'Completed' END,
+          in_library = TRUE
       WHERE id = ANY($1::int[])
       RETURNING id
     `,
@@ -209,11 +219,26 @@ export const listDocuments = async (): Promise<StoredDocument[]> => {
                  json_build_object('fieldName', f.field_name, 'fieldKey', f.field_key, 'fieldValue', f.field_value)
                ) FILTER (WHERE f.id IS NOT NULL),
                '[]'::json
-             ) AS fields
+             ) AS fields,
+             tmpl.template_id,
+             tmpl.template_name,
+             tmpl.template_number
       FROM documents d
       LEFT JOIN extracted_fields f ON f.document_id = d.id
+      LEFT JOIN LATERAL (
+        SELECT t.numeric_id AS template_id,
+               t.name AS template_name,
+               t.numeric_id AS template_number
+        FROM extraction_batch_files bf
+        JOIN extraction_batches b ON b.id = bf.batch_id
+        LEFT JOIN templates t ON t.numeric_id = b.template_id
+        WHERE bf.document_id = d.id
+        ORDER BY bf.created_at DESC
+        LIMIT 1
+      ) tmpl ON TRUE
       WHERE d.status = 'Completed'
-      GROUP BY d.id
+         OR (d.status = 'Failed' AND d.in_library)
+      GROUP BY d.id, tmpl.template_id, tmpl.template_name, tmpl.template_number
       ORDER BY d.uploaded_at DESC, d.id DESC
     `,
   );

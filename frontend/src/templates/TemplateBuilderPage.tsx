@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { extensionOf, FALLBACK_ACCEPT } from "../format";
 import type { CatalogField } from "../types";
+import { createExtractionBatch } from "../services/batches";
 import {
   fetchTemplateDocumentFile,
   getTemplate,
@@ -20,7 +21,7 @@ import {
   type SourceDocument,
 } from "./matching";
 import "./templates.css";
-import { type TemplateCategory, type TemplateField } from "./types";
+import { type TemplateField } from "./types";
 
 const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp"]);
 
@@ -44,7 +45,6 @@ export const TemplateBuilderPage = () => {
   const location = useLocation();
   const incoming = location.state as { sample?: File; files?: File[]; name?: string } | null;
   const [name, setName] = useState(incoming?.name?.trim() || "Untitled template");
-  const [category, setCategory] = useState<TemplateCategory>("Finance");
   const [fields, setFields] = useState<TemplateField[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [documents, setDocuments] = useState<SourceDocument[]>([]);
@@ -183,6 +183,15 @@ export const TemplateBuilderPage = () => {
     valid.forEach((doc) => {
       void extractFile(doc);
     });
+
+    // Also send samples for backend compression so they show in the Active Upload Queue.
+    if (id && valid.length) {
+      void createExtractionBatch({
+        files: valid.map((doc) => doc.file),
+        jobName: `${name || "Template"} samples`,
+        templateId: id,
+      }).catch(() => undefined);
+    }
   };
 
   useEffect(() => {
@@ -287,7 +296,6 @@ export const TemplateBuilderPage = () => {
         const template = await getTemplate(id);
         if (cancelled) return;
         setName(template.name);
-        setCategory(template.category);
         setFields(template.fields);
         setSelectedId(template.fields[0]?.id ?? null);
 
@@ -344,7 +352,6 @@ export const TemplateBuilderPage = () => {
       const saved = await saveTemplate({
         id,
         name: name.trim(),
-        category,
         fields: toSave
           .filter((field) => field.name.trim())
           .map((field) => ({

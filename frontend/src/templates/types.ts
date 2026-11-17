@@ -1,7 +1,5 @@
-export const TEMPLATE_CATEGORIES = ["Finance", "HR", "Legal", "Identity"] as const;
 export const FIELD_TYPES = ["text", "date", "currency", "number", "table"] as const;
 
-export type TemplateCategory = (typeof TEMPLATE_CATEGORIES)[number];
 export type FieldType = (typeof FIELD_TYPES)[number];
 export type FieldLevel = "header" | "line";
 
@@ -30,6 +28,7 @@ export type TemplateField = {
 
 export type Template = {
   id: string;
+  numericId?: number;
   name: string;
   version: number;
   category: TemplateCategory;

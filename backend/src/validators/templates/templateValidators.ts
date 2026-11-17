@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { FIELD_TYPES, TEMPLATE_CATEGORIES } from "../../db/templates/templateDb.js";
+import { FIELD_TYPES } from "../../db/templates/templateDb.js";
 
 const trimmed = (max: number) => z.string().trim().min(1).max(max);
 
@@ -39,7 +39,6 @@ export const templateFieldSchema = z
 export const templateFormSchema = z
   .object({
     name: trimmed(120),
-    category: z.enum(TEMPLATE_CATEGORIES),
     // Drafts may be created with no fields yet; uniqueness still enforced when present.
     fields: z.array(templateFieldSchema).default([]),
   })
@@ -69,16 +68,25 @@ const queryString = (max: number) =>
     .transform((value) => value || undefined);
 
 export const listTemplatesQuerySchema = z.object({
-  category: queryString(40),
   q: queryString(120),
 });
 
+const templateRef = z
+  .string()
+  .min(1, "Template id is required.")
+  .refine(
+    (value) =>
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value) ||
+      /^\d+$/.test(value),
+    "Template id must be a UUID or numeric id.",
+  );
+
 export const templateIdParamsSchema = z.object({
-  id: z.string().uuid("Template id must be a UUID."),
+  id: templateRef,
 });
 
 export const templateDocumentParamsSchema = z.object({
-  id: z.string().uuid("Template id must be a UUID."),
+  id: templateRef,
   docId: z.string().uuid("Document id must be a UUID."),
 });
 

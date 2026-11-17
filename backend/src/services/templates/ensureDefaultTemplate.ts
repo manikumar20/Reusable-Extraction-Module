@@ -69,7 +69,6 @@ export const ensureDefaultTemplate = async () => {
     existing ??
     (await createTemplate({
       name: DEFAULT_TEMPLATE_NAME,
-      category: "Finance",
       fields: defaultTemplateFields(),
       published: true,
     }));

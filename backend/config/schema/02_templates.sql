@@ -1,9 +1,9 @@
 -- One row per template (no version history table).
+-- Column order: id, numeric_id, name, is_active, published, created_at, updated_at
 CREATE TABLE IF NOT EXISTS templates (
   id UUID PRIMARY KEY,
+  numeric_id INTEGER,
   name TEXT NOT NULL,
-  version INTEGER NOT NULL DEFAULT 1,
-  category TEXT NOT NULL,
   is_active BOOLEAN NOT NULL DEFAULT FALSE,
   published BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -17,12 +17,10 @@ BEGIN
     RETURN;
   END IF;
 
-  INSERT INTO templates (id, name, version, category, is_active, created_at, updated_at)
+  INSERT INTO templates (id, name, is_active, created_at, updated_at)
   SELECT DISTINCT ON (template_id)
     template_id,
     name,
-    1,
-    category,
     COALESCE(is_active, FALSE),
     created_at,
     updated_at
@@ -124,3 +122,38 @@ CREATE INDEX IF NOT EXISTS template_fields_order
 CREATE INDEX IF NOT EXISTS template_fields_catalog_key
   ON template_fields (catalog_key)
   WHERE catalog_key IS NOT NULL;
+
+ALTER TABLE templates ADD COLUMN IF NOT EXISTS numeric_id INTEGER;
+
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM templates WHERE numeric_id IS NULL) THEN
+    WITH numbered AS (
+      SELECT id, (ROW_NUMBER() OVER (ORDER BY created_at ASC, id ASC) - 1)::int AS n
+      FROM templates
+      WHERE numeric_id IS NULL
+    ),
+    base AS (
+      SELECT COALESCE(MAX(numeric_id) + 1, 0) AS start_at FROM templates
+    )
+    UPDATE templates AS t
+    SET numeric_id = numbered.n + base.start_at
+    FROM numbered, base
+    WHERE t.id = numbered.id;
+  END IF;
+END $$;
+
+ALTER TABLE templates ALTER COLUMN numeric_id SET NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS templates_numeric_id_unique ON templates (numeric_id);
+
+CREATE SEQUENCE IF NOT EXISTS templates_numeric_id_seq AS INTEGER MINVALUE 0 START WITH 0;
+
+SELECT setval(
+  'templates_numeric_id_seq',
+  GREATEST(COALESCE((SELECT MAX(numeric_id) FROM templates), 0), 0),
+  EXISTS (SELECT 1 FROM templates)
+);
+
+ALTER TABLE templates ALTER COLUMN numeric_id SET DEFAULT nextval('templates_numeric_id_seq');
+ALTER SEQUENCE templates_numeric_id_seq OWNED BY templates.numeric_id;

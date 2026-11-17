@@ -1,22 +1,37 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
-import DocTypeIcon from "./components/DocTypeIcon";
 import { jobFromDocument, mimeForFileName } from "./jobFromDocument";
 import { Results } from "./Results";
 import { apiUrl } from "./services/api";
 import type { ExtractedFieldRow, StoredDocument } from "./types";
 
+const formatClock = (date: Date) => {
+  const hour = date.getHours();
+  const hour12 = hour % 12 || 12;
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  const period = hour >= 12 ? "pm" : "am";
+  return `${String(hour12).padStart(2, "0")}:${minutes} ${period}`;
+};
+
 const uploadedAt = (value: string) => {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString();
+  const day = date.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+  return `${day}, ${formatClock(date)}`;
 };
 
-const sourceLabel = (source: string) => {
-  if (source === "MANUAL") return "Manual";
-  if (source === "SUGGESTED") return "Suggested";
-  if (source === "AI") return "AI";
-  return source;
+const sourceFrame = (sources: string[]) => {
+  const keys = new Set(sources.map((source) => source.trim().toUpperCase()));
+  const ai = keys.has("AI") || keys.has("SUGGESTED");
+  const manual = keys.has("MANUAL");
+  if (ai && manual) return "AI/Manual";
+  if (ai) return "AI";
+  if (manual) return "Manual";
+  return "";
 };
 
 const statusClass = (status: string) => {
@@ -27,11 +42,26 @@ const statusClass = (status: string) => {
   return "pending";
 };
 
+const PAGE_SIZE = 10;
+
+const pageRange = (from: number, to: number) =>
+  Array.from({ length: to - from + 1 }, (_, index) => from + index);
+
+const paginationItems = (current: number, totalPages: number): Array<number | "ellipsis"> => {
+  if (totalPages <= 7) return pageRange(1, totalPages);
+  if (current <= 3 || current >= totalPages - 2) {
+    return [...pageRange(1, 3), "ellipsis", ...pageRange(totalPages - 2, totalPages)];
+  }
+  return [1, "ellipsis", current - 1, current, current + 1, "ellipsis", totalPages];
+};
+
 export const DocumentsPage = () => {
   const [documents, setDocuments] = useState<StoredDocument[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
+  const [gotoPage, setGotoPage] = useState("1");
   const [openId, setOpenId] = useState<number | null>(null);
   const [fields, setFields] = useState<ExtractedFieldRow[]>([]);
   const [fieldsError, setFieldsError] = useState("");
@@ -124,10 +154,38 @@ export const DocumentsPage = () => {
     const needle = query.trim().toLowerCase();
     if (!needle) return documents;
     return documents.filter((document) => {
-      const hay = `${document.fileName} ${document.documentType} ${document.status} ${(document.sources ?? []).join(" ")}`.toLowerCase();
+      const hay = `${document.fileName} ${document.documentType} ${document.status} ${document.templateName ?? ""} ${document.templateId ?? ""} ${(document.sources ?? []).join(" ")}`.toLowerCase();
       return hay.includes(needle);
     });
   }, [documents, query]);
+
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const pageSafe = Math.min(page, pageCount);
+  const paged = filtered.slice((pageSafe - 1) * PAGE_SIZE, pageSafe * PAGE_SIZE);
+
+  useEffect(() => {
+    setPage(1);
+  }, [query]);
+
+  useEffect(() => {
+    setGotoPage(String(pageSafe));
+    if (page !== pageSafe) setPage(pageSafe);
+  }, [page, pageSafe]);
+
+  const jumpToPage = (raw: string) => {
+    const next = Number(raw);
+    if (!Number.isInteger(next) || next < 1) {
+      setGotoPage(String(pageSafe));
+      return;
+    }
+    setPage(Math.min(next, pageCount));
+  };
+
+  const onGotoSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const input = event.currentTarget.elements.namedItem("docs-goto-page");
+    jumpToPage(input instanceof HTMLInputElement ? input.value : gotoPage);
+  };
 
   const open = documents.find((document) => document.id === openId) ?? null;
   const reviewJob = open ? jobFromDocument(open, fields) : null;
@@ -240,7 +298,8 @@ export const DocumentsPage = () => {
             <thead>
               <tr>
                 <th>Document name</th>
-                <th>Document type</th>
+                <th>Template</th>
+                <th>Template name</th>
                 <th>Total fields</th>
                 <th>Source</th>
                 <th>Status</th>
@@ -249,7 +308,9 @@ export const DocumentsPage = () => {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((document) => (
+              {paged.map((document) => {
+                const source = sourceFrame(document.sources ?? []);
+                return (
                 <tr
                   key={document.id}
                   className={openId === document.id ? "docs-row is-open" : "docs-row"}
@@ -260,43 +321,42 @@ export const DocumentsPage = () => {
                       {document.fileName}
                     </strong>
                   </td>
-                  <td className="docs-type-cell">
-                    <DocTypeIcon fileName={document.fileName} />
+                  <td className="docs-nowrap">
+                    {document.templateId == null ? (
+                      <span className="docs-muted">—</span>
+                    ) : (
+                      document.templateId
+                    )}
+                  </td>
+                  <td onClick={(event) => event.stopPropagation()}>
+                    {document.templateId != null && document.templateName ? (
+                      <Link
+                        className="docs-template-link"
+                        to={`/templates/${document.templateId}/edit`}
+                        title={document.templateName}
+                      >
+                        {document.templateName}
+                      </Link>
+                    ) : (
+                      <span className="docs-muted">—</span>
+                    )}
                   </td>
                   <td>{document.totalFields ?? 0}</td>
                   <td>
-                    <div className="docs-sources">
-                      {(document.sources ?? []).length === 0 ? (
-                        <span className="docs-muted">—</span>
-                      ) : (
-                        document.sources?.map((source) => (
-                          <span key={source} className={`docs-pill source ${source.toLowerCase()}`}>
-                            {sourceLabel(source)}
-                          </span>
-                        ))
-                      )}
-                    </div>
+                    {source ? (
+                      <span className="docs-pill source">{source}</span>
+                    ) : (
+                      <span className="docs-muted">—</span>
+                    )}
                   </td>
                   <td>
                     <span className={`docs-pill ${statusClass(document.status || "Pending")}`}>
                       {document.status || "Pending"}
                     </span>
                   </td>
-                  <td className="docs-muted">{uploadedAt(document.uploadedAt)}</td>
+                  <td className="docs-muted docs-nowrap">{uploadedAt(document.uploadedAt)}</td>
                   <td>
                     <div className="docs-actions" onClick={(event) => event.stopPropagation()}>
-                      <button
-                        type="button"
-                        className="docs-action view"
-                        aria-label={`View ${document.fileName}`}
-                        title="Review"
-                        onClick={() => void openDocument(document)}
-                      >
-                        <svg viewBox="0 0 24 24" aria-hidden="true">
-                          <path d="M2.5 12S6 7 12 7s9.5 5 9.5 5-3.5 5-9.5 5S2.5 12 2.5 12z" />
-                          <circle cx="12" cy="12" r="2.25" fill="currentColor" stroke="none" />
-                        </svg>
-                      </button>
                       <button
                         type="button"
                         className="docs-action edit"
@@ -325,9 +385,69 @@ export const DocumentsPage = () => {
                     </div>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {!loading && filtered.length > 0 && (
+        <div className="docs-pagination">
+          <div className="docs-page-size">
+            <span>{PAGE_SIZE}</span>
+            <span>Items per page</span>
+          </div>
+          <div className="docs-page-numbers">
+            <button
+              type="button"
+              aria-label="Previous page"
+              disabled={pageSafe <= 1}
+              onClick={() => setPage(pageSafe - 1)}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M15 6 9 12l6 6" />
+              </svg>
+            </button>
+            {paginationItems(pageSafe, pageCount).map((item, index) =>
+              item === "ellipsis" ? (
+                <span key={`ellipsis-${index}`} className="docs-page-ellipsis">
+                  …
+                </span>
+              ) : (
+                <button
+                  key={item}
+                  type="button"
+                  className="docs-page-num"
+                  aria-current={item === pageSafe ? "page" : undefined}
+                  onClick={() => setPage(item)}
+                >
+                  {item}
+                </button>
+              ),
+            )}
+            <button
+              type="button"
+              aria-label="Next page"
+              disabled={pageSafe >= pageCount}
+              onClick={() => setPage(pageSafe + 1)}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m9 6 6 6-6 6" />
+              </svg>
+            </button>
+          </div>
+          <form className="docs-page-goto" onSubmit={onGotoSubmit}>
+            <label htmlFor="docs-goto-page">Go to page</label>
+            <input
+              id="docs-goto-page"
+              name="docs-goto-page"
+              value={gotoPage}
+              inputMode="numeric"
+              onChange={(event) => setGotoPage(event.target.value)}
+              onBlur={(event) => jumpToPage(event.target.value)}
+            />
+          </form>
         </div>
       )}
     </section>

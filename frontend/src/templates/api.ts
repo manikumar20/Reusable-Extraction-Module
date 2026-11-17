@@ -4,7 +4,6 @@ import type {
   FieldSuggestions,
   SampleTest,
   Template,
-  TemplateCategory,
   TemplateField,
   TemplateSummary,
 } from "./types";
@@ -16,9 +15,8 @@ const errorMessage = async (response: Response, fallback: string) => {
   return payload?.error?.message || fallback;
 };
 
-export const listTemplates = async (filter: { category: string; query: string }) => {
+export const listTemplates = async (filter: { query: string }) => {
   const params = new URLSearchParams();
-  if (filter.category && filter.category !== "All") params.set("category", filter.category);
   if (filter.query.trim()) params.set("q", filter.query.trim());
   const response = await fetch(apiUrl(`/templates?${params.toString()}`));
   if (!response.ok) throw new Error(await errorMessage(response, "Templates could not be loaded."));
@@ -35,12 +33,10 @@ export const getTemplate = async (id: string) => {
 export const saveTemplate = async (input: {
   id?: string;
   name: string;
-  category: TemplateCategory;
   fields: TemplateField[];
 }) => {
   const body = JSON.stringify({
     name: input.name,
-    category: input.category,
     fields: input.fields.map((field) => {
       const copy = { ...field };
       delete copy.suggested;

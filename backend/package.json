@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.127.0",
+    "archiver": "^8.0.0",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
@@ -29,9 +30,11 @@
     "unpdf": "^1.8.1",
     "word-extractor": "^1.0.4",
     "xlsx": "^0.18.5",
+    "yauzl": "^3.4.0",
     "zod": "^3.25.28"
   },
   "devDependencies": {
+    "@types/archiver": "^8.0.0",
     "@types/bcryptjs": "^2.4.6",
     "@types/cors": "^2.8.19",
     "@types/express": "^4.17.23",
@@ -40,6 +43,7 @@
     "@types/multer": "^2.3.0",
     "@types/node": "^22.15.21",
     "@types/pg": "^8.23.1",
+    "@types/yauzl": "^3.4.0",
     "tsx": "^4.20.6",
     "typescript": "^5.8.3"
   }

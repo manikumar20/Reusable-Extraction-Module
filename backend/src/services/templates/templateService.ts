@@ -11,7 +11,6 @@ import {
   setActiveTemplate,
   toJobTemplate,
   type FieldInput,
-  type TemplateCategory,
 } from "../../db/templates/templateDb.js";
 import { AppError, HTTP_STATUS } from "../../utils/errors/index.js";
 
@@ -23,7 +22,7 @@ export {
   toJobTemplate,
 };
 
-export const listTemplatesForApi = async (filter: { category?: string; query?: string }) => {
+export const listTemplatesForApi = async (filter: { query?: string }) => {
   const templates = await listTemplates(filter);
   return { templates };
 };
@@ -38,13 +37,12 @@ export const requireTemplate = async (templateId: string) => {
 
 export const createTemplateRecord = async (input: {
   name: string;
-  category: TemplateCategory;
   fields: FieldInput[];
 }) => createTemplate(input);
 
 export const updateTemplateRecord = async (
   templateId: string,
-  input: { name: string; category: TemplateCategory; fields: FieldInput[] },
+  input: { name: string; fields: FieldInput[] },
 ) => {
   const template = await saveTemplateVersion(templateId, input);
   if (!template) {

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { FALLBACK_ACCEPT } from "../format";
+import { createExtractionBatch } from "../services/batches";
 import {
   activateTemplate,
   clearActiveTemplate,
@@ -56,7 +57,7 @@ export const TemplatesPage = () => {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    listTemplates({ category: "All", query: "" })
+    listTemplates({ query: "" })
       .then((rows) => {
         if (cancelled) return;
         setTemplates(rows);
@@ -142,17 +143,31 @@ export const TemplatesPage = () => {
     try {
       const draft = await saveTemplate({
         name: createName.trim() || "Untitled template",
-        category: "Finance",
         fields: [],
       });
+      const samples = [...createFiles];
       setCreateOpen(false);
+      setCreateFiles([]);
+
+      // Compress samples on the backend so they appear in the Active Upload Queue.
+      if (samples.length) {
+        try {
+          await createExtractionBatch({
+            files: samples,
+            jobName: `${draft.name} samples`,
+            templateId: draft.id,
+          });
+        } catch {
+          // Builder still opens even if batch creation fails.
+        }
+      }
+
       navigate(`/templates/${draft.id}/edit`, {
         state: {
           name: draft.name,
-          files: createFiles,
+          files: samples,
         },
       });
-      setCreateFiles([]);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Draft template could not be created.");
     } finally {
@@ -316,7 +331,6 @@ export const TemplatesPage = () => {
                       </div>
                     </div>
                     <div className="hub-card-stats">
-                      <span>{template.category}</span>
                       <span>{template.fields.length} fields</span>
                       {fieldMix(template).header > 0 && <span>{fieldMix(template).header} header</span>}
                       {fieldMix(template).line > 0 && <span>{fieldMix(template).line} line</span>}

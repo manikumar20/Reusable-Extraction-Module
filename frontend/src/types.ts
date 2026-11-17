@@ -58,6 +58,9 @@ export type StoredDocument = {
   sources?: string[];
   totalFields?: number;
   fields?: { fieldName: string; fieldValue: string }[];
+  templateId?: number | null;
+  templateName?: string | null;
+  templateNumber?: number | null;
 };
 
 export type ExtractedFieldRow = {

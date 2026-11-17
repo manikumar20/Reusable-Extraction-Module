@@ -2,9 +2,10 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import multer from "multer";
+import { temporaryDir } from "../config/storage.js";
 import { HttpError } from "../utils/httpError.js";
 
-const DOCUMENTS = [".pdf", ".txt", ".doc", ".docx", ".xls", ".xlsx"];
+const DOCUMENTS = [".pdf", ".txt", ".doc", ".docx", ".xls", ".xlsx", ".csv"];
 const IMAGES = [".jpg", ".jpeg", ".png", ".gif", ".webp"];
 
 export const DOCUMENT_EXTENSIONS = DOCUMENTS;
@@ -57,5 +58,20 @@ export const uploadSamples = multer({
 export const uploadTemplateDocuments = multer({
   storage,
   limits: { fileSize: MAX_UPLOAD_BYTES, files: 10 },
+  fileFilter,
+});
+
+const batchStorage = multer.diskStorage({
+  destination: (_req, _file, callback) => callback(null, temporaryDir),
+  filename: (_req, file, callback) => {
+    const safe = path.basename(file.originalname).replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_");
+    callback(null, `${randomUUID()}-${safe}`);
+  },
+});
+
+/** Multi-file upload for ZIP batch compression (temp files removed after ZIP). */
+export const uploadBatchFiles = multer({
+  storage: batchStorage,
+  limits: { fileSize: MAX_UPLOAD_BYTES, files: 50 },
   fileFilter,
 });

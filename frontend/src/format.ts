@@ -12,6 +12,7 @@ export const FALLBACK_ACCEPT = [
   ".docx",
   ".xls",
   ".xlsx",
+  ".csv",
   ".jpg",
   ".jpeg",
   ".png",
