@@ -1,3 +1,4 @@
+import { removeStagedFilesForDocument } from "../batches/stagedStore.js";
 import {
   createExtractedField,
   deleteDocument,
@@ -37,6 +38,10 @@ export const addExtractedField = (input: {
 export const removeExtractedField = (documentId: number, fieldId: string) =>
   deleteExtractedField(documentId, fieldId);
 
-export const removeDocument = (documentId: number) => deleteDocument(documentId);
+export const removeDocument = async (documentId: number) => {
+  const removed = await deleteDocument(documentId);
+  if (removed) await removeStagedFilesForDocument(documentId);
+  return removed;
+};
 
 export const fileMetaForDocument = (documentId: number) => getDocumentFileMeta(documentId);

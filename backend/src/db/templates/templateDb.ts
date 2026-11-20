@@ -1,8 +1,5 @@
 import { randomUUID } from "node:crypto";
-import fs from "node:fs/promises";
-import path from "node:path";
 import { getPool } from "../_shared/client.js";
-import { uploadDir } from "../../middleware/documentUpload.js";
 
 export const FIELD_TYPES = ["text", "date", "currency", "number", "table"] as const;
 
@@ -57,18 +54,11 @@ const fieldKey = (field: TemplateField) =>
     .replace(/[^a-z0-9]+/g, "_")
     .replace(/^_+|_+$/g, "");
 
-/** Shape used by extraction jobs (header/line key lists). */
+/** Shape used by extraction jobs. Every template field is a line field. */
 export const toJobTemplate = (template: Template) => ({
   id: template.id,
   name: template.name,
-  headerKeys: template.fields
-    .filter((field) => field.level === "header")
-    .map(fieldKey)
-    .filter(Boolean),
-  lineKeys: template.fields
-    .filter((field) => field.level !== "header")
-    .map(fieldKey)
-    .filter(Boolean),
+  lineKeys: template.fields.map(fieldKey).filter(Boolean),
 });
 
 export const getActiveTemplateId = async (): Promise<string | null> => {
@@ -161,7 +151,7 @@ const mapField = (row: FieldRow): TemplateField => {
     name: row.name,
     type: row.field_type as FieldType,
     required: row.required,
-    level: row.level === "header" ? "header" : "line",
+    level: "line",
   };
   if (row.hint) field.hint = row.hint;
   if (row.format) field.format = row.format;
@@ -254,7 +244,7 @@ const insertFields = async (
         box?.w ?? null,
         box?.h ?? null,
         field.catalogKey?.trim() || null,
-        field.level === "header" ? "header" : "line",
+        "line",
       ],
     );
   }
@@ -409,7 +399,7 @@ const parseExtractedFields = (value: unknown): TemplateField[] => {
       required: row.required === true,
       hint: typeof row.hint === "string" ? row.hint : undefined,
       catalogKey: typeof row.catalogKey === "string" ? row.catalogKey : undefined,
-      level: row.level === "header" ? "header" : "line",
+      level: "line",
       suggested: row.suggested === true,
       sampleValue: typeof row.sampleValue === "string" ? row.sampleValue : undefined,
     });
@@ -441,14 +431,6 @@ const countDocumentsByTemplate = async (numericIds: number[]) => {
   );
   for (const row of rows) counts.set(Number(row.template_id), Number(row.count) || 0);
   return counts;
-};
-
-const unlinkStored = async (storedNames: string[]) => {
-  await Promise.all(
-    storedNames.map((name) =>
-      fs.unlink(path.join(uploadDir, path.basename(name))).catch(() => undefined),
-    ),
-  );
 };
 
 export const listTemplateDocuments = async (
@@ -489,35 +471,57 @@ export const getTemplateDocument = async (
 /** Replace all sample documents for a template with the newly uploaded files. */
 export const replaceTemplateDocuments = async (
   templateId: string,
-  files: { fileName: string; storedName: string; mimeType: string; extractedFields?: unknown }[],
+  files: { fileName: string; mimeType: string; fileData: Buffer; extractedFields?: unknown }[],
 ): Promise<TemplateDocument[]> => {
   const numericId = await numericIdForTemplate(templateId);
   if (numericId == null) return [];
-  const existing = await listTemplateDocuments(templateId);
   await getPool().query("DELETE FROM template_documents WHERE template_id = $1", [numericId]);
-  await unlinkStored(existing.map((doc) => doc.storedName));
 
   for (const file of files) {
     await getPool().query(
       `
-        INSERT INTO template_documents (id, template_id, file_name, stored_name, mime_type, extracted_fields)
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+        INSERT INTO template_documents (id, template_id, file_name, stored_name, mime_type, extracted_fields, file_data)
+        VALUES ($1, $2, $3, '', $4, $5::jsonb, $6)
       `,
       [
         randomUUID(),
         numericId,
         file.fileName,
-        file.storedName,
         file.mimeType || "",
         JSON.stringify(parseExtractedFields(file.extractedFields)),
+        file.fileData,
       ],
     );
   }
   return listTemplateDocuments(templateId);
 };
 
+export const getTemplateDocumentBytes = async (templateId: string, documentId: string) => {
+  const numericId = await numericIdForTemplate(templateId);
+  if (numericId == null) return null;
+  const { rows } = await getPool().query<{
+    file_name: string;
+    mime_type: string;
+    file_data: Buffer | null;
+  }>(
+    `
+      SELECT file_name, mime_type, file_data
+      FROM template_documents
+      WHERE template_id = $1 AND id = $2
+      LIMIT 1
+    `,
+    [numericId, documentId],
+  );
+  const row = rows[0];
+  if (!row?.file_data?.length) return null;
+  return {
+    fileName: row.file_name,
+    mimeType: row.mime_type || "application/octet-stream",
+    bytes: row.file_data,
+  };
+};
+
 export const deleteTemplate = async (templateId: string): Promise<boolean> => {
-  const docs = await listTemplateDocuments(templateId);
   const numericId = await numericIdForTemplate(templateId);
   const { rowCount } = await getPool().query(
     "DELETE FROM templates WHERE id::text = $1 OR numeric_id::text = $1",
@@ -526,6 +530,5 @@ export const deleteTemplate = async (templateId: string): Promise<boolean> => {
   if (numericId != null) {
     await getPool().query("DELETE FROM template_documents WHERE template_id = $1", [numericId]);
   }
-  await unlinkStored(docs.map((doc) => doc.storedName));
   return (rowCount ?? 0) > 0;
 };

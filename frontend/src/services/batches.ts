@@ -1,38 +1,19 @@
 import { apiUrl } from "./api";
 
-export type BatchStatus =
-  | "Uploaded"
-  | "Processing"
-  | "Completed"
-  | "Failed"
-  | "Cancelled";
+export type StagedStatus = "Uploaded" | "Processing" | "Completed" | "Failed";
 
-export type ExtractionBatch = {
+export type StagedFile = {
   id: string;
-  jobName: string;
-  zipFileName: string;
-  zipSizeBytes: number;
-  fileCount: number;
+  originalName: string;
+  mimeType: string;
+  sizeBytes: number;
   templateId: number | null;
-  status: BatchStatus;
-  retryCount: number;
+  status: StagedStatus;
+  documentId: number | null;
+  errorMessage: string | null;
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;
-  errorMessage: string | null;
-  zipStoredAs?: string;
-  fileNames?: string[];
-  templateName?: string | null;
-};
-
-export type ExtractionBatchFile = {
-  id: string;
-  batchId: string;
-  originalName: string;
-  documentId: number | null;
-  status: string;
-  errorMessage: string | null;
-  createdAt: string;
 };
 
 const readError = async (response: Response) => {
@@ -44,30 +25,52 @@ const readError = async (response: Response) => {
   }
 };
 
-export const createExtractionBatch = async (input: {
+/** Compress each file on its own. Extraction starts only when run is not false. */
+export const stageUploads = async (input: {
   files: File[];
-  jobName?: string;
   templateId?: string;
+  run?: boolean;
+  deferTemplate?: boolean;
 }) => {
   const body = new FormData();
   for (const file of input.files) body.append("files", file);
-  if (input.jobName) body.append("jobName", input.jobName);
   if (input.templateId) body.append("templateId", input.templateId);
+  if (input.run === false) body.append("run", "false");
+  if (input.deferTemplate) body.append("deferTemplate", "true");
 
   const response = await fetch(apiUrl("/batches"), { method: "POST", body });
   if (!response.ok) throw new Error(await readError(response));
-  return (await response.json()) as { batch: ExtractionBatch; files: ExtractionBatchFile[] };
+  return (await response.json()) as { files: StagedFile[] };
 };
 
-export const listExtractionBatches = async () => {
+export const createExtractionBatch = (input: {
+  files: File[];
+  jobName?: string;
+  templateId?: string;
+  run?: boolean;
+  deferTemplate?: boolean;
+}) => stageUploads(input);
+
+export const runStagedFile = async (id: string) => {
+  const response = await fetch(apiUrl(`/batches/${id}/run`), { method: "POST" });
+  if (!response.ok) throw new Error(await readError(response));
+  return (await response.json()) as { file: StagedFile };
+};
+
+export const listStagedFiles = async () => {
   const response = await fetch(apiUrl("/batches"));
   if (!response.ok) throw new Error(await readError(response));
-  const payload = (await response.json()) as { batches: ExtractionBatch[] };
-  return payload.batches;
+  const payload = (await response.json()) as { files: StagedFile[] };
+  return payload.files;
 };
 
-export const getExtractionBatch = async (id: string) => {
+export const getStagedFile = async (id: string) => {
   const response = await fetch(apiUrl(`/batches/${id}`));
   if (!response.ok) throw new Error(await readError(response));
-  return (await response.json()) as { batch: ExtractionBatch; files: ExtractionBatchFile[] };
+  return (await response.json()) as { file: StagedFile };
+};
+
+export const deleteStagedFile = async (id: string) => {
+  const response = await fetch(apiUrl(`/batches/${id}`), { method: "DELETE" });
+  if (!response.ok && response.status !== 404) throw new Error(await readError(response));
 };

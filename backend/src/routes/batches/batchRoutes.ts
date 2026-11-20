@@ -1,6 +1,7 @@
 import { Router } from "express";
 import {
   handleCreateBatch,
+  handleDeleteBatch,
   handleGetBatch,
   handleListBatches,
   handleRunBatch,
@@ -34,4 +35,10 @@ batchRouter.post(
   "/:id/run",
   validate({ params: batchIdParamsSchema }),
   asyncHandler(handleRunBatch),
+);
+
+batchRouter.delete(
+  "/:id",
+  validate({ params: batchIdParamsSchema }),
+  asyncHandler(handleDeleteBatch),
 );

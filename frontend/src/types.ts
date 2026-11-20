@@ -88,8 +88,6 @@ export type ServerConfig = {
   recordModel: string;
   documentModel: string;
   accept: string[];
-  maxUploadMb: number;
-  maxImageMb: number;
   googleDrive?: boolean;
 };
 

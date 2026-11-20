@@ -1,18 +1,11 @@
-import fs from "node:fs/promises";
-import path from "node:path";
 import type { Request, Response } from "express";
 import { env } from "../../config/env.js";
 import { documentModel, recordModel } from "../../config/runtime.js";
 import { hasClaudeCredentials } from "../../services/extract/anthropicClient.js";
-import { insertDocument } from "../../db/documents/documentDb.js";
+import { gzipUpload } from "../../services/batches/zipArchive.js";
 import { getActiveTemplate, toJobTemplate } from "../../db/templates/templateDb.js";
-import { HEADER_FIELDS, LINE_FIELDS } from "../../services/extract/engine/shared/fields.js";
-import {
-  ALLOWED_EXTENSIONS,
-  IMAGE_EXTENSIONS,
-  MAX_IMAGE_BYTES,
-  MAX_UPLOAD_BYTES,
-} from "../../middleware/documentUpload.js";
+import { LINE_FIELDS } from "../../services/extract/engine/shared/fields.js";
+import { ALLOWED_EXTENSIONS } from "../../middleware/documentUpload.js";
 import { resolveDocumentType } from "../../services/documents/documentType.js";
 import {
   createJob,
@@ -23,11 +16,6 @@ import {
 } from "../../services/extract/extractService.js";
 import { AppError, HTTP_STATUS } from "../../utils/errors/index.js";
 import { extractTemplateSchema } from "../../validators/extract/extractValidators.js";
-
-const extensionOf = (fileName: string) => {
-  const dot = fileName.lastIndexOf(".");
-  return dot < 0 ? "" : fileName.slice(dot).toLowerCase();
-};
 
 const formText = (value: unknown) => {
   if (typeof value === "string") return value;
@@ -57,7 +45,6 @@ const readExtractTemplate = (body: unknown): JobTemplate | null => {
   return {
     ...(row.id ? { id: row.id } : {}),
     name: row.name,
-    headerKeys: row.headerKeys,
     lineKeys: row.lineKeys,
   };
 };
@@ -68,14 +55,12 @@ export const handleGetExtractConfig = async (_request: Request, response: Respon
     recordModel: recordModel(),
     documentModel: documentModel(),
     accept: ALLOWED_EXTENSIONS,
-    maxUploadMb: MAX_UPLOAD_BYTES / (1024 * 1024),
-    maxImageMb: MAX_IMAGE_BYTES / (1024 * 1024),
     googleDrive: Boolean(env.googleDriveApiKey),
   });
 };
 
 export const handleGetExtractCatalog = async (_request: Request, response: Response) => {
-  response.json({ header: HEADER_FIELDS, lines: LINE_FIELDS });
+  response.json({ lines: LINE_FIELDS });
 };
 
 export const handleCreateExtract = async (request: Request, response: Response) => {
@@ -84,13 +69,13 @@ export const handleCreateExtract = async (request: Request, response: Response) 
     throw AppError(HTTP_STATUS.BAD_REQUEST, "Choose a file to extract.", { code: "FILE_REQUIRED" });
   }
 
-  const fileName = path.basename(file.originalname);
-  if (IMAGE_EXTENSIONS.includes(extensionOf(fileName)) && file.size > MAX_IMAGE_BYTES) {
-    await fs.unlink(file.path).catch(() => undefined);
-    throw AppError(HTTP_STATUS.PAYLOAD_TOO_LARGE, "Images must be 5 MB or smaller.", {
-      code: "IMAGE_TOO_LARGE",
-    });
-  }
+  const compressed = await gzipUpload({
+    originalname: file.originalname,
+    buffer: file.buffer,
+    size: file.size,
+    mimetype: file.mimetype,
+  });
+  const fileName = compressed.originalName;
   if (!hasClaudeCredentials()) {
     throw AppError(HTTP_STATUS.SERVICE_UNAVAILABLE, "AI API key is not configured.", {
       code: "CLAUDE_NOT_CONFIGURED",
@@ -105,16 +90,14 @@ export const handleCreateExtract = async (request: Request, response: Response) 
       ? (request.body as { documentType?: unknown }).documentType
       : "",
   );
-  const document = await insertDocument({
-    fileName,
-    storedName: path.basename(file.filename),
+  const job = createJob(fileName, template, null);
+  void runJob(job.id, file.buffer, fileName, {
+    gzip: compressed.fileData,
     mimeType: file.mimetype || "",
     documentType: resolveDocumentType(requestedType, fileName),
+    templateId: active?.numericId ?? null,
   });
-
-  const job = createJob(fileName, template, document.id);
-  void runJob(job.id, file.path, fileName);
-  response.status(HTTP_STATUS.ACCEPTED).json({ id: job.id, document });
+  response.status(HTTP_STATUS.ACCEPTED).json({ id: job.id });
 };
 
 export const handleGetExtract = async (request: Request, response: Response) => {

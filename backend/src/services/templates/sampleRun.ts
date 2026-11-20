@@ -1,15 +1,13 @@
-import fs from "node:fs/promises";
-import { HEADER_FIELDS, LINE_FIELDS } from "../extract/engine/shared/fields.js";
+import { LINE_FIELDS, type CatalogField } from "../extract/engine/shared/fields.js";
 import type { ExtraFieldValue } from "../extract/engine/cleaner/clean.js";
 import { extractDocument } from "../extract/engine/extract/run.js";
 import {
   lineFieldValues,
   type ExtractedLine,
 } from "../extract/engine/extract/records.js";
-import { apiKey, documentModel, recordModel } from "../../config/runtime.js";
+import { apiKey, recordModel } from "../../config/runtime.js";
 
-const catalog = [...HEADER_FIELDS, ...LINE_FIELDS];
-const labels = new Map(catalog.map((field) => [field.key, field.label]));
+const labels = new Map(LINE_FIELDS.map((field) => [field.key, field.label]));
 
 const norm = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, "");
 
@@ -26,50 +24,45 @@ const textOf = (value: ExtraFieldValue | undefined) => {
     .join(", ");
 };
 
-const collectedValues = (header: Record<string, ExtraFieldValue>, lines: ExtractedLine[]) => {
+const collectedValues = (lines: ExtractedLine[]) => {
   const values = new Map<string, string>();
-  const put = (key: string, value: ExtraFieldValue | undefined) => {
-    const text = textOf(value);
-    if (!text || values.has(key)) return;
-    values.set(key, text);
-  };
-  for (const [key, value] of Object.entries(header)) put(key, value);
   for (const line of lines) {
-    for (const [key, value] of Object.entries(lineFieldValues(line))) put(key, value);
+    for (const [key, value] of Object.entries(lineFieldValues(line))) {
+      const text = textOf(value);
+      if (!text || values.has(key)) continue;
+      values.set(key, text);
+    }
   }
   return values;
 };
 
 const readFile = async (
-  file: { path: string; originalname: string },
+  file: { buffer: Buffer; originalname: string },
   template?: {
-    headerKeys?: string[];
-    lineKeys?: string[];
+    lineExtras?: CatalogField[];
   },
 ) => {
   const lines: ExtractedLine[] = [];
-  const result = await extractDocument({
-    filePath: file.path,
+  await extractDocument({
+    filePath: file.originalname,
+    fileBuffer: file.buffer,
     fileName: file.originalname,
     apiKey: apiKey(),
     recordModel: recordModel(),
-    documentModel: documentModel(),
-    headerKeys: template?.headerKeys,
-    lineKeys: template?.lineKeys,
+    lineExtras: template?.lineExtras,
     onRecords: (records) => {
       lines.push(...records);
     },
   });
-  return collectedValues(result.header, lines);
+  return collectedValues(lines);
 };
 
 export const testTemplateOnSamples = async (
   fields: { id: string; name: string; catalogKey?: string }[],
-  files: { path: string; originalname: string }[],
-  templateKeys?: { headerKeys: string[]; lineKeys: string[] },
+  files: { buffer: Buffer; originalname: string }[],
+  templateKeys?: { lineExtras?: CatalogField[] },
 ) => {
-  try {
-    const results = [];
+  const results = [];
     for (const file of files) {
       const values = await readFile(file, templateKeys);
       const byName = new Map<string, string>();
@@ -94,8 +87,5 @@ export const testTemplateOnSamples = async (
         }),
       });
     }
-    return results;
-  } finally {
-    await Promise.all(files.map((file) => fs.unlink(file.path).catch(() => undefined)));
-  }
+  return results;
 };

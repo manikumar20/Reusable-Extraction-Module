@@ -10,7 +10,7 @@
  * - description: what Claude reads for that field in the tool schema
  *
  * A template selects which non-default keys to extract. With no template,
- * every optional field is requested alongside the defaults.
+ * only the default line fields are extracted.
  */
 
 import {
@@ -215,26 +215,6 @@ export const LINE_FIELDS: CatalogField[] = [
   { key: "inspection_requirements", label: "Inspection Requirements", dataType: TEXT, description: "Inspection and certification requirements (Inspection Text, EN 10204 3.1, Certificate of Conformity, TPI)." },
   { key: "acceptable_brands", label: "Acceptable Brands", dataType: LIST, matchRole: "BRAND_FILTER", description: "The brands or makes the customer will accept, e.g. ANY ADNOC APPROVED VENDOR or MAKE: RECTRON OR EQUIVALENT." },
   { key: "reference_documents", label: "Reference Documents", dataType: LIST, description: "Datasheets, valve lists or other documents the line refers to, e.g. DATA SHEET 2820-L-DS-0014." },
-];
-
-export const HEADER_FIELDS: CatalogField[] = [
-  { key: "document_number", label: "Document No.", dataType: TEXT, supplierShareable: false, description: "Customer document / RFx / enquiry number (Document Number, RFx Number, NPCC Enquiry No.). If the document does not print it, take it from the file name or an attachment name such as enquiry_6000142038_technical_bid_submission_sheet.xls." },
-  { key: "pr_number", label: "PR / Requisition No.", dataType: TEXT, supplierShareable: false, description: "Purchase requisition number (REQ No, Requisition Number, PR in the file name)." },
-  { key: "customer_name", label: "Customer", dataType: TEXT, supplierShareable: false, description: 'Company issuing the document (page header, "This RFP is published by ..."). Never our own company shown as the supplier or vendor.' },
-  { key: "document_title", label: "Document Title", dataType: TEXT, description: "Short subject of the document (REQ TITLE, Material :, Title:)." },
-  { key: "event_type", label: "Event Type", dataType: CODE, description: "The printed event type, such as RFP, RFI, EOI or ENQUIRY." },
-  { key: "buyer_name", label: "Buyer", dataType: TEXT, supplierShareable: false, description: "Customer buyer or owner name (Owner, Buyer Details, BUYER)." },
-  { key: "buyer_email", label: "Buyer Email", dataType: TEXT, supplierShareable: false, description: "Customer buyer email address." },
-  { key: "issue_date", label: "Issue Date", dataType: DATE, supplierShareable: false, description: "Date the document was issued (DATE:, Publish time). Not the file download time." },
-  { key: "closing_datetime", label: "Closing Date / Time", dataType: TEXT, supplierShareable: false, description: "Bid due date and time (Due date, CLOSING DATE + CLOSING TIME, DEADLINE). Write YYYY-MM-DD HH:MM when unambiguous, otherwise as printed. Ignore 1/1/1900." },
-  { key: "document_currency", label: "Currency", dataType: CODE, description: "3-letter ISO currency of the document (US Dollar -> USD, UAE Dirham -> AED)." },
-  { key: "incoterm", label: "Incoterm", dataType: CODE, matchRole: "LOCATION", description: "Delivery term code such as DAP, DDU, DDP, EXW (Inco Term, DELIVERY TERMS)." },
-  { key: "delivery_location", label: "Delivery Location", dataType: TEXT, matchRole: "LOCATION", supplierShareable: false, description: "Where goods must be delivered (Inco Term Location, SHIP TO, DEL. SITE)." },
-  { key: "special_instructions", label: "Special Instructions", dataType: TEXT, supplierShareable: false, description: "Special instructions or conditions for bidders, summarised in at most three sentences." },
-  { key: "bid_validity", label: "Bid Validity", dataType: TEXT, description: "Required quote validity, e.g. 90 days (Bid Validity, VALIDITY END). Empty when it is a blank field for the bidder." },
-  { key: "payment_terms", label: "Payment Terms", dataType: TEXT, description: "Payment terms set by the customer, e.g. 30 days net. Empty when it is a blank field for the bidder." },
-  { key: "project_reference", label: "Project", dataType: TEXT, supplierShareable: false, description: "Project name or code (Project, PROJECT:)." },
-  { key: "external_reference", label: "External Reference", dataType: TEXT, supplierShareable: false, description: "End customer document number on a re-enquiry from a trader (EXT REF)." },
 ];
 
 /** Always-included line fields (`isDefault: true`). */

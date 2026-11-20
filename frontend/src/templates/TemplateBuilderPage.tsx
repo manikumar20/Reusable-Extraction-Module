@@ -23,18 +23,12 @@ import {
 import "./templates.css";
 import { type TemplateField } from "./types";
 
-const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp"]);
-
 const fileKey = (file: File) => `${file.name}:${file.size}:${file.lastModified}`;
 
 const rejectReason = (file: File) => {
   const extension = extensionOf(file.name);
   if (!FALLBACK_ACCEPT.includes(extension)) {
     return "Use a PDF, Word, Excel, text, or image file.";
-  }
-  const limit = (IMAGE_EXTENSIONS.has(extension) ? 5 : 25) * 1024 * 1024;
-  if (file.size > limit) {
-    return IMAGE_EXTENSIONS.has(extension) ? "Images must be 5 MB or smaller." : "File is larger than 25 MB.";
   }
   return "";
 };

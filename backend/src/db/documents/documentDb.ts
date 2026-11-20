@@ -1,8 +1,5 @@
 import { randomUUID } from "node:crypto";
-import fs from "node:fs/promises";
-import path from "node:path";
-import { uploadDir } from "../../middleware/documentUpload.js";
-import { HEADER_FIELDS, LINE_FIELDS } from "../../services/extract/engine/shared/fields.js";
+import { LINE_FIELDS } from "../../services/extract/engine/shared/fields.js";
 import { getPool } from "../_shared/client.js";
 
 export type StoredDocument = {
@@ -93,6 +90,8 @@ const mapDocument = (row: DocumentRow): StoredDocument => ({
   templateNumber: row.template_number == null || row.template_number === "" ? null : Number(row.template_number),
 });
 
+const withoutLineSuffix = (value: string) => value.replace(/#\d+$/, "");
+
 const mapFieldPreview = (value: DocumentRow["fields"]) => {
   const rows = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
   if (!Array.isArray(rows)) return [];
@@ -104,7 +103,7 @@ const mapFieldPreview = (value: DocumentRow["fields"]) => {
       if (!fieldName) return [];
       return [
         {
-          fieldName,
+          fieldName: withoutLineSuffix(fieldName),
           fieldKey: typeof field.fieldKey === "string" ? field.fieldKey : "",
           fieldValue: typeof field.fieldValue === "string" ? field.fieldValue : "",
         },
@@ -117,7 +116,7 @@ const mapFieldPreview = (value: DocumentRow["fields"]) => {
 const mapField = (row: FieldRow): ExtractedField => ({
   id: row.id,
   documentId: Number(row.document_id),
-  fieldName: row.field_name,
+  fieldName: withoutLineSuffix(row.field_name),
   fieldKey: row.field_key,
   fieldValue: row.field_value ?? "",
   dataType: row.data_type || "STRING",
@@ -126,25 +125,18 @@ const mapField = (row: FieldRow): ExtractedField => ({
   updatedAt: toIso(row.updated_at),
 });
 
-const catalogByKey = new Map(
-  [...HEADER_FIELDS, ...LINE_FIELDS].map((field) => [field.key, field]),
-);
-const headerRank = new Map(HEADER_FIELDS.map((field, index) => [field.key, index]));
+const catalogByKey = new Map(LINE_FIELDS.map((field) => [field.key, field]));
 const lineRank = new Map(LINE_FIELDS.map((field, index) => [field.key, index]));
 
-/** Header fields in catalogue order, then each line in line order with catalogue columns. */
+/** Each line in order, with catalogue columns inside the line. */
 const compareFieldKeys = (left: string, right: string) => {
   const [leftBase, leftLine] = left.split("#");
   const [rightBase, rightLine] = right.split("#");
-  const leftScope = leftLine ? 1 : 0;
-  const rightScope = rightLine ? 1 : 0;
-  if (leftScope !== rightScope) return leftScope - rightScope;
   const leftIndex = Number(leftLine ?? 0);
   const rightIndex = Number(rightLine ?? 0);
   if (leftIndex !== rightIndex) return leftIndex - rightIndex;
-  const ranks = leftScope === 1 ? lineRank : headerRank;
-  const leftRank = ranks.get(leftBase ?? "") ?? 1000;
-  const rightRank = ranks.get(rightBase ?? "") ?? 1000;
+  const leftRank = lineRank.get(leftBase ?? "") ?? 1000;
+  const rightRank = lineRank.get(rightBase ?? "") ?? 1000;
   if (leftRank !== rightRank) return leftRank - rightRank;
   return left.localeCompare(right);
 };
@@ -166,25 +158,104 @@ const isEmptyValue = (value: unknown) => valueText(value) === "" || valueText(va
 
 export const insertDocument = async (input: {
   fileName: string;
-  storedName: string;
   mimeType: string;
   documentType: string;
+  templateId?: number | null;
+  fileData?: Buffer | null;
 }): Promise<StoredDocument> => {
   const { rows } = await getPool().query<DocumentRow>(
     `
-      INSERT INTO documents (file_name, stored_name, mime_type, document_type, status, source)
-      VALUES ($1, $2, $3, $4, 'Processing', 'AI')
-      RETURNING id, file_name, mime_type, document_type, uploaded_at, status, source, 0::int AS total_fields, '[]'::json AS fields
+      INSERT INTO documents (
+        file_name, stored_name, mime_type, document_type, status, source, template_id, file_data
+      )
+      VALUES ($1, '', $2, $3, 'Processing', 'AI', $4, $5)
+      RETURNING id, file_name, mime_type, document_type, uploaded_at, status, source, 0::int AS total_fields, '[]'::json AS fields,
+                template_id
     `,
-    [input.fileName, input.storedName, input.mimeType, input.documentType],
+    [input.fileName, input.mimeType, input.documentType, input.templateId ?? null, input.fileData ?? null],
   );
   const row = rows[0];
   if (!row) throw new Error("Document insert did not return a row.");
   return mapDocument(row);
 };
 
+/** Create the document row. The gzip bytes are saved on this row immediately. */
+export const insertCompressedDocument = async (input: {
+  fileName: string;
+  mimeType: string;
+  documentType: string;
+  templateId?: number | null;
+}) => {
+  const { rows } = await getPool().query<{
+    id: number;
+    file_name: string;
+    mime_type: string;
+    template_id: number | null;
+    status: string;
+    error_message: string | null;
+    uploaded_at: Date;
+    started_at: Date | null;
+    completed_at: Date | null;
+    size_bytes: string;
+  }>(
+    `
+      INSERT INTO documents (
+        file_name, stored_name, mime_type, document_type, status, source, template_id
+      )
+      VALUES ($1, '', $2, $3, 'Uploaded', 'AI', $4)
+      RETURNING id, file_name, mime_type, template_id, status, error_message,
+                uploaded_at, started_at, completed_at, octet_length(file_data)::text AS size_bytes
+    `,
+    [input.fileName, input.mimeType, input.documentType, input.templateId ?? null],
+  );
+  const row = rows[0];
+  if (!row) throw new Error("Document insert did not return a row.");
+  return row;
+};
+
+/** Insert the compressed file only after extraction has finished. */
+export const insertExtractedDocument = async (input: {
+  fileName: string;
+  mimeType: string;
+  documentType: string;
+  templateId?: number | null;
+  fileData: Buffer;
+}) => {
+  const { rows } = await getPool().query<{ id: number }>(
+    `
+      INSERT INTO documents (
+        file_name, stored_name, mime_type, document_type, status, source, template_id, file_data, completed_at
+      )
+      VALUES ($1, '', $2, $3, 'Completed', 'AI', $4, $5, NOW())
+      RETURNING id
+    `,
+    [input.fileName, input.mimeType, input.documentType, input.templateId ?? null, input.fileData],
+  );
+  const row = rows[0];
+  if (!row) throw new Error("Document insert did not return a row.");
+  return { id: Number(row.id) };
+};
+
+/** Keep the gzip bytes after extraction. The decompressed copy is never written here. */
+export const saveDocumentFileData = async (documentId: number, fileData: Buffer) => {
+  await getPool().query(`UPDATE documents SET file_data = $2 WHERE id = $1`, [documentId, fileData]);
+};
+
+export const getCompressedDocument = async (documentId: number) => {
+  const { rows } = await getPool().query<{ file_data: Buffer | null }>(
+    `SELECT file_data FROM documents WHERE id = $1`,
+    [documentId],
+  );
+  const data = rows[0]?.file_data;
+  return data && data.length ? data : null;
+};
+
 export const updateDocumentStatus = async (documentId: number, status: string) => {
   await getPool().query(`UPDATE documents SET status = $2 WHERE id = $1`, [documentId, status]);
+};
+
+export const setDocumentFile = async (documentId: number, storedName: string) => {
+  await getPool().query(`UPDATE documents SET stored_name = $2 WHERE id = $1`, [documentId, storedName]);
 };
 
 /** Move extracted files into the Documents library. Unsaved rows stay hidden. */
@@ -220,25 +291,15 @@ export const listDocuments = async (): Promise<StoredDocument[]> => {
                ) FILTER (WHERE f.id IS NOT NULL),
                '[]'::json
              ) AS fields,
-             tmpl.template_id,
-             tmpl.template_name,
-             tmpl.template_number
+             t.numeric_id AS template_id,
+             t.name AS template_name,
+             t.numeric_id AS template_number
       FROM documents d
       LEFT JOIN extracted_fields f ON f.document_id = d.id
-      LEFT JOIN LATERAL (
-        SELECT t.numeric_id AS template_id,
-               t.name AS template_name,
-               t.numeric_id AS template_number
-        FROM extraction_batch_files bf
-        JOIN extraction_batches b ON b.id = bf.batch_id
-        LEFT JOIN templates t ON t.numeric_id = b.template_id
-        WHERE bf.document_id = d.id
-        ORDER BY bf.created_at DESC
-        LIMIT 1
-      ) tmpl ON TRUE
+      LEFT JOIN templates t ON t.numeric_id = d.template_id
       WHERE d.status = 'Completed'
          OR (d.status = 'Failed' AND d.in_library)
-      GROUP BY d.id, tmpl.template_id, tmpl.template_name, tmpl.template_number
+      GROUP BY d.id, t.numeric_id, t.name
       ORDER BY d.uploaded_at DESC, d.id DESC
     `,
   );
@@ -331,39 +392,39 @@ export const deleteExtractedField = async (documentId: number, fieldId: string) 
 export const getDocumentFileMeta = async (documentId: number) => {
   const { rows } = await getPool().query<{
     file_name: string;
-    stored_name: string;
     mime_type: string;
+    file_data: Buffer | null;
   }>(
-    `SELECT file_name, stored_name, mime_type FROM documents WHERE id = $1`,
+    `SELECT file_name, mime_type, file_data FROM documents WHERE id = $1`,
     [documentId],
   );
   const row = rows[0];
   if (!row) return null;
   return {
     fileName: row.file_name,
-    storedName: row.stored_name,
     mimeType: row.mime_type || "application/octet-stream",
-    filePath: path.join(uploadDir, path.basename(row.stored_name)),
+    gzip: row.file_data && row.file_data.length ? row.file_data : null,
   };
 };
 
-export const deleteDocument = async (documentId: number): Promise<boolean> => {
-  const existing = await getPool().query<{ stored_name: string }>(
-    `SELECT stored_name FROM documents WHERE id = $1`,
-    [documentId],
+export const existingDocumentIds = async (ids: number[]) => {
+  const unique = [...new Set(ids.filter((id) => Number.isInteger(id) && id > 0))];
+  if (!unique.length) return new Set<number>();
+  const { rows } = await getPool().query<{ id: number }>(
+    `SELECT id FROM documents WHERE id = ANY($1::int[])`,
+    [unique],
   );
-  const stored = existing.rows[0]?.stored_name;
+  return new Set(rows.map((row) => Number(row.id)));
+};
+
+export const deleteDocument = async (documentId: number): Promise<boolean> => {
   const { rowCount } = await getPool().query(`DELETE FROM documents WHERE id = $1`, [documentId]);
-  if (stored) {
-    await fs.unlink(path.join(uploadDir, path.basename(stored))).catch(() => undefined);
-  }
   return (rowCount ?? 0) > 0;
 };
 
-/** Persist header and line fields extracted from one uploaded document. */
+/** Persist line fields extracted from one uploaded document. */
 export const saveExtractedFields = async (input: {
   documentId: number;
-  header: Record<string, unknown>;
   lines: { fields: Record<string, unknown> }[];
 }) => {
   const client = await getPool().connect();
@@ -371,7 +432,8 @@ export const saveExtractedFields = async (input: {
     await client.query("BEGIN");
     await client.query(`DELETE FROM extracted_fields WHERE document_id = $1`, [input.documentId]);
     const insertField = (fieldKey: string, fieldValue: unknown) => {
-      const catalog = catalogByKey.get(fieldKey.split("#")[0] ?? fieldKey);
+      const baseKey = fieldKey.split("#")[0] || fieldKey;
+      const catalog = catalogByKey.get(baseKey);
       return client.query(
         `
           INSERT INTO extracted_fields
@@ -381,17 +443,13 @@ export const saveExtractedFields = async (input: {
         [
           randomUUID(),
           input.documentId,
-          catalog?.label || fieldKey,
+          catalog?.label || baseKey,
           fieldKey,
           valueText(fieldValue),
-          dataTypeOf(fieldKey.split("#")[0] ?? fieldKey),
+          dataTypeOf(baseKey),
         ],
       );
     };
-    for (const [fieldKey, fieldValue] of Object.entries(input.header)) {
-      if (isEmptyValue(fieldValue)) continue;
-      await insertField(fieldKey, fieldValue);
-    }
     for (const [lineIndex, line] of input.lines.entries()) {
       for (const [fieldKey, fieldValue] of Object.entries(line.fields)) {
         if (isEmptyValue(fieldValue)) continue;

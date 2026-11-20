@@ -5,7 +5,7 @@ import {
   type CatalogField,
 } from "../shared/fields.js";
 import { CLAUDE_MAX_RETRIES, withClaudeSlot } from "../shared/limiter.js";
-import { lineUserText, SYSTEM_PROMPT } from "../shared/prompt.js";
+import { lineUserText, SYSTEM_PROMPT, TEMPLATE_SYSTEM_PROMPT, templateUserText } from "../shared/prompt.js";
 import {
   cleanExtraFields,
   extraFieldSchema,
@@ -20,8 +20,6 @@ import {
   LINE_ITEMS_TOOL_NAME,
   LINE_MAX_TOKENS,
   LINE_TIMEOUT_MS,
-  MAX_IMAGE_BYTES,
-  MAX_PDF_BYTES,
   MAX_TEXT_CHARS,
 } from "../shared/constants.js";
 
@@ -51,28 +49,31 @@ export const lineFieldValues = (line: ExtractedLine): LineExtraFields => ({
  * Only default fields are required so Claude does not emit empty shells for
  * every optional key on every row (that was slowing large catalogs).
  */
-const extractToolFor = (fields: CatalogField[]): Anthropic.Tool => {
-  const required = fields
-    .filter((field) => field.isDefault)
-    .map((field) => field.key);
+const extractToolFor = (fields: CatalogField[], templateFields: boolean): Anthropic.Tool => {
+  const required = templateFields
+    ? []
+    : fields.filter((field) => field.isDefault).map((field) => field.key);
   return {
     name: LINE_ITEMS_TOOL_NAME,
-    description: "Save every product row extracted from the attached document.",
+    description: templateFields
+      ? "Save the field values found in the document."
+      : "Save every product row extracted from the attached document.",
     input_schema: {
       type: "object",
       additionalProperties: false,
       properties: {
         items: {
           type: "array",
-          description:
-            "Products, materials, spares, or services listed in the document. Skip questionnaire rows and blank form fields.",
+          description: templateFields
+            ? "One object for a single-record document, or one object per repeated row. Include a property whenever its value appears in the file."
+            : "Products, materials, spares, or services listed in the document. Skip questionnaire rows and blank form fields.",
           items: {
             type: "object",
             additionalProperties: false,
             properties: Object.fromEntries(
               fields.map((field) => [field.key, extraFieldSchema(field)]),
             ),
-            required: required.length ? required : fields.slice(0, 1).map((f) => f.key),
+            ...(required.length ? { required } : {}),
           },
         },
       },
@@ -196,6 +197,7 @@ const userContent = (
   ext: string,
   officeText: string,
   fieldDefs: CatalogField[],
+  templateFields: boolean,
 ): Anthropic.ContentBlockParam[] => {
   const blocks: Anthropic.ContentBlockParam[] = [];
   const imageMedia = IMAGE_MEDIA[ext];
@@ -203,9 +205,6 @@ const userContent = (
 
   // Images first — never treat binary image bytes as plain text.
   if (imageMedia) {
-    if (buffer.length > MAX_IMAGE_BYTES) {
-      throw new Error("Images must be 5 MB or smaller.");
-    }
     blocks.push({
       type: "image",
       source: {
@@ -224,7 +223,7 @@ const userContent = (
         data: trimmedText.slice(0, MAX_TEXT_CHARS),
       },
     });
-  } else if (ext === ".pdf" && buffer.length <= MAX_PDF_BYTES) {
+  } else if (ext === ".pdf") {
     blocks.push({
       type: "document",
       title: originalName,
@@ -238,13 +237,18 @@ const userContent = (
 
   blocks.push({
     type: "text",
-    text: lineUserText({
-      originalName,
-      ext,
-      hasText: Boolean(trimmedText) && !imageMedia,
-      fieldKeys: fieldDefs.map((field) => field.key),
-      identityKey: LINE_IDENTITY_KEY,
-    }),
+    text: templateFields
+      ? templateUserText({
+          originalName,
+          fields: fieldDefs.map((field) => ({ key: field.key, label: field.label })),
+        })
+      : lineUserText({
+          originalName,
+          ext,
+          hasText: Boolean(trimmedText) && !imageMedia,
+          fieldKeys: fieldDefs.map((field) => field.key),
+          identityKey: LINE_IDENTITY_KEY,
+        }),
   });
 
   return blocks;
@@ -259,6 +263,8 @@ export const extractLineItemsWithClaude = async (input: {
   model: string;
   /** Catalog fields to extract (defaults + optionals). Derived from fields.ts. */
   lineFields?: CatalogField[];
+  /** Use the template field list instead of the procurement line catalog. */
+  templateFields?: boolean;
   signal?: AbortSignal;
   onBatch?: (items: ExtractedLine[]) => Promise<void>;
 }): Promise<{
@@ -273,27 +279,20 @@ export const extractLineItemsWithClaude = async (input: {
     throw new Error("Extraction was cancelled.");
   }
 
-  const fieldDefs =
-    input.lineFields?.length
-      ? input.lineFields
-      : lineFieldsForExtract([]);
+  const templateFields = Boolean(input.templateFields && input.lineFields?.length);
+  const fieldDefs = templateFields ? input.lineFields! : input.lineFields?.length ? input.lineFields : lineFieldsForExtract([]);
   const content = userContent(
     input.buffer,
     input.originalName,
     input.ext,
     input.officeText,
     fieldDefs,
+    templateFields,
   );
   const hasFile = content.some(
     (block) => block.type === "document" || block.type === "image",
   );
   if (!hasFile) {
-    if (input.ext === ".pdf" && input.buffer.length > MAX_PDF_BYTES) {
-      throw new Error("This scanned PDF is larger than 20 MB, so it cannot be read.");
-    }
-    if (IMAGE_MEDIA[input.ext] && input.buffer.length > MAX_IMAGE_BYTES) {
-      throw new Error("Images must be 5 MB or smaller.");
-    }
     return { items: [], stopReason: "", usage: emptyTokenUsage() };
   }
 
@@ -333,8 +332,8 @@ export const extractLineItemsWithClaude = async (input: {
           model: input.model,
           max_tokens: LINE_MAX_TOKENS,
           temperature: 0,
-          system: SYSTEM_PROMPT,
-          tools: [extractToolFor(fieldDefs)],
+          system: templateFields ? TEMPLATE_SYSTEM_PROMPT : SYSTEM_PROMPT,
+          tools: [extractToolFor(fieldDefs, templateFields)],
           tool_choice: { type: "tool", name: LINE_ITEMS_TOOL_NAME },
           messages: [{ role: "user", content }],
         },

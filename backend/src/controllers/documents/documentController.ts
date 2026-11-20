@@ -1,4 +1,4 @@
-import fs from "node:fs/promises";
+import { gunzipSync } from "node:zlib";
 import type { Request, Response } from "express";
 import {
   addExtractedField,
@@ -10,6 +10,7 @@ import {
   removeExtractedField,
   saveDocumentsToLibrary,
 } from "../../services/documents/documentService.js";
+import { temporaryGzipFor } from "../../services/batches/stagedStore.js";
 import { AppError, HTTP_STATUS } from "../../utils/errors/index.js";
 
 const documentId = (request: Request) => Number(request.params.id);
@@ -30,21 +31,21 @@ export const handleSaveDocuments = async (request: Request, response: Response) 
 };
 
 export const handleGetDocumentFile = async (request: Request, response: Response) => {
-  const meta = await fileMetaForDocument(documentId(request));
+  const id = documentId(request);
+  const meta = await fileMetaForDocument(id);
   if (!meta) {
     throw AppError(HTTP_STATUS.NOT_FOUND, "Document not found.", { code: "NOT_FOUND" });
-  }
-  try {
-    await fs.access(meta.filePath);
-  } catch {
-    throw AppError(HTTP_STATUS.NOT_FOUND, "Document file is missing.", { code: "NOT_FOUND" });
   }
   response.setHeader("Content-Type", meta.mimeType || "application/octet-stream");
   response.setHeader(
     "Content-Disposition",
     `inline; filename="${meta.fileName.replace(/"/g, "")}"`,
   );
-  response.sendFile(meta.filePath);
+  const gzip = meta.gzip ?? temporaryGzipFor(String(id));
+  if (!gzip) {
+    throw AppError(HTTP_STATUS.NOT_FOUND, "Document file is missing.", { code: "NOT_FOUND" });
+  }
+  response.send(gunzipSync(gzip));
 };
 
 export const handleListDocumentFields = async (request: Request, response: Response) => {

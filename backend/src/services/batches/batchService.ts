@@ -1,129 +1,137 @@
-import path from "node:path";
-import {
-  BATCH_STATUSES,
-  createBatch,
-  getBatch,
-  listBatchFiles,
-  listBatches,
-  recoverStaleProcessingBatches,
-  updateBatchStatus,
-  type ExtractionBatch,
-} from "../../db/batches/batchDb.js";
 import { getActiveTemplate, getTemplate } from "../../db/templates/templateDb.js";
+import { existingDocumentIds } from "../../db/documents/documentDb.js";
+import { resolveDocumentType } from "../documents/documentType.js";
 import { AppError, HTTP_STATUS } from "../../utils/errors/index.js";
 import { hasClaudeCredentials } from "../extract/anthropicClient.js";
-import { processBatchExtraction } from "./batchExtract.js";
-import { compressUploadsToZip, type UploadedDiskFile } from "./zipArchive.js";
+import { startStagedExtraction } from "./batchExtract.js";
+import {
+  STAGED_STATUSES,
+  listStagedFiles,
+  releaseUnextractedDocuments,
+  readStagedFile,
+  removeStagedFile,
+  saveCompressedUpload,
+  type StagedFile,
+} from "./stagedStore.js";
+import { gzipUpload, validateUploadFiles, type UploadedMemoryFile } from "./zipArchive.js";
 
-export const createBatchFromUploads = async (input: {
-  files: UploadedDiskFile[];
-  jobName?: string;
+const BUSY_MS = 2 * 60 * 1000;
+
+export const stageUploads = async (input: {
+  files: UploadedMemoryFile[];
   templateId?: string | null;
-}): Promise<ExtractionBatch> => {
-  const zip = await compressUploadsToZip(input.files);
-  const selected = input.templateId ? await getTemplate(input.templateId) : null;
-  const active = selected ? null : await getActiveTemplate();
+  deferTemplate?: boolean;
+}): Promise<StagedFile[]> => {
+  validateUploadFiles(input.files);
+  const selected = input.templateId && !input.deferTemplate ? await getTemplate(input.templateId) : null;
+  const active = selected || input.deferTemplate ? null : await getActiveTemplate();
   const templateId = selected?.numericId ?? active?.numericId ?? null;
-  return createBatch({
-    id: zip.batchId,
-    jobName: input.jobName?.trim() || `Batch ${new Date().toISOString().slice(0, 16)}`,
-    zipFilePath: zip.zipFilePath,
-    zipFileName: zip.zipFileName,
-    zipSizeBytes: zip.zipSizeBytes,
-    fileCount: zip.originalNames.length,
-    templateId,
-    status: BATCH_STATUSES.UPLOADED,
-    originalNames: zip.originalNames,
-  });
-};
+  const staged: StagedFile[] = [];
 
-export const getBatchDetail = async (id: string) => {
-  const batch = await getBatch(id);
-  if (!batch) {
-    throw AppError(HTTP_STATUS.NOT_FOUND, "Extraction batch not found.", { code: "NOT_FOUND" });
+  try {
+    for (const file of input.files) {
+      const compressed = await gzipUpload(file);
+      const record = await saveCompressedUpload({
+        fileName: compressed.originalName,
+        mimeType: file.mimetype || "",
+        documentType: resolveDocumentType("", compressed.originalName),
+        templateId,
+        fileData: compressed.fileData,
+      });
+      staged.push({ ...record, sizeBytes: compressed.sizeBytes });
+    }
+  } catch (error) {
+    await Promise.all(staged.map((file) => removeStagedFile(file.id)));
+    throw error;
   }
-  const files = await listBatchFiles(id);
-  return { batch, files };
+
+  return staged;
 };
 
-export const listExtractionBatches = () => listBatches();
-
-export const recoverStaleBatches = async () => {
-  const ids = await recoverStaleProcessingBatches();
-  for (const id of ids) {
-    void processBatchExtraction(id).catch(async (error) => {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`Batch ${id} failed after restart:`, message);
-      await updateBatchStatus(id, {
-        status: BATCH_STATUSES.FAILED,
-        completedAt: new Date(),
-        errorMessage: message,
-      }).catch(() => undefined);
-    });
+export const getStagedFile = async (id: string) => {
+  const file = await readStagedFile(id);
+  if (!file) {
+    throw AppError(HTTP_STATUS.NOT_FOUND, "Compressed file not found.", { code: "NOT_FOUND" });
   }
-  return ids;
+  return file;
 };
 
-export const runBatchNow = async (id: string) => {
+export const listCompressedFiles = async () => {
+  const files = await listStagedFiles();
+  const ids = files.flatMap((file) => (file.documentId == null ? [] : [file.documentId]));
+  const live = await existingDocumentIds(ids);
+  const orphans = files.filter(
+    (file) =>
+      file.documentId != null &&
+      !live.has(file.documentId) &&
+      file.status !== STAGED_STATUSES.UPLOADED &&
+      file.status !== STAGED_STATUSES.PROCESSING,
+  );
+  if (!orphans.length) return files;
+  await Promise.all(orphans.map((file) => removeStagedFile(file.id)));
+  const gone = new Set(orphans.map((file) => file.id));
+  return files.filter((file) => !gone.has(file.id));
+};
+
+export const discardStagedFile = async (id: string) => {
+  const file = await readStagedFile(id);
+  if (!file) {
+    throw AppError(HTTP_STATUS.NOT_FOUND, "Compressed file not found.", { code: "NOT_FOUND" });
+  }
+  if (file.status === STAGED_STATUSES.PROCESSING) {
+    const started = file.startedAt ? new Date(file.startedAt).getTime() : 0;
+    if (started && Date.now() - started < BUSY_MS) {
+      throw AppError(HTTP_STATUS.CONFLICT, "File is already processing.", { code: "FILE_BUSY" });
+    }
+  }
+  await removeStagedFile(id);
+};
+
+const isFreshProcessing = (file: StagedFile) => {
+  if (file.status !== STAGED_STATUSES.PROCESSING) return false;
+  const started = file.startedAt ? new Date(file.startedAt).getTime() : 0;
+  return Boolean(started) && Date.now() - started < BUSY_MS;
+};
+
+export const runStagedFile = async (id: string) => {
   if (!hasClaudeCredentials()) {
     throw AppError(HTTP_STATUS.SERVICE_UNAVAILABLE, "AI API key is not configured.", {
       code: "CLAUDE_NOT_CONFIGURED",
     });
   }
-  const batch = await getBatch(id);
-  if (!batch) {
-    throw AppError(HTTP_STATUS.NOT_FOUND, "Extraction batch not found.", { code: "NOT_FOUND" });
+  const file = await getStagedFile(id);
+  if (file.status === STAGED_STATUSES.COMPLETED) {
+    throw AppError(HTTP_STATUS.CONFLICT, "File already extracted.", { code: "FILE_DONE" });
   }
-  if (batch.status === BATCH_STATUSES.CANCELLED) {
-    throw AppError(HTTP_STATUS.CONFLICT, "Cancelled batches cannot be run.", {
-      code: "BATCH_CANCELLED",
-    });
+  if (isFreshProcessing(file)) {
+    throw AppError(HTTP_STATUS.CONFLICT, "File is already processing.", { code: "FILE_BUSY" });
   }
-  if (batch.status === BATCH_STATUSES.COMPLETED) {
-    throw AppError(HTTP_STATUS.CONFLICT, "Batch already completed.", { code: "BATCH_DONE" });
-  }
-  if (batch.status === BATCH_STATUSES.PROCESSING) {
-    const started = batch.startedAt ? new Date(batch.startedAt).getTime() : 0;
-    const stale = !started || Date.now() - started > 2 * 60 * 1000;
-    if (!stale) {
-      throw AppError(HTTP_STATUS.CONFLICT, "Batch is already processing.", { code: "BATCH_BUSY" });
+  const claimed = await startStagedExtraction(id);
+  if (!claimed) {
+    const latest = await getStagedFile(id);
+    if (latest.status === STAGED_STATUSES.COMPLETED) {
+      throw AppError(HTTP_STATUS.CONFLICT, "File already extracted.", { code: "FILE_DONE" });
     }
+    throw AppError(HTTP_STATUS.CONFLICT, "File is already processing.", { code: "FILE_BUSY" });
   }
-  if (batch.status === BATCH_STATUSES.PROCESSING || batch.status === BATCH_STATUSES.FAILED) {
-    await updateBatchStatus(id, {
-      status: BATCH_STATUSES.UPLOADED,
-      startedAt: null,
-      completedAt: null,
-      errorMessage: null,
-    });
-  }
-
-  void processBatchExtraction(id).catch(async (error) => {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`Batch ${id} failed:`, message);
-    await updateBatchStatus(id, {
-      status: BATCH_STATUSES.FAILED,
-      completedAt: new Date(),
-      errorMessage: message,
-    }).catch(() => undefined);
-  });
-  return getBatchDetail(id);
+  return claimed;
 };
 
-export const publicBatch = (batch: ExtractionBatch) => ({
-  id: batch.id,
-  jobName: batch.jobName,
-  zipFileName: batch.zipFileName,
-  zipSizeBytes: batch.zipSizeBytes,
-  fileCount: batch.fileCount,
-  templateId: batch.templateId,
-  status: batch.status,
-  retryCount: batch.retryCount,
-  createdAt: batch.createdAt,
-  startedAt: batch.startedAt,
-  completedAt: batch.completedAt,
-  errorMessage: batch.errorMessage,
-  zipStoredAs: path.basename(batch.zipFilePath),
-  fileNames: batch.fileNames ?? [],
-  templateName: batch.templateName ?? null,
+export const recoverStagedFiles = async () => {
+  await releaseUnextractedDocuments();
+  return [];
+};
+
+export const publicStagedFile = (file: StagedFile) => ({
+  id: file.id,
+  originalName: file.originalName,
+  mimeType: file.mimeType,
+  sizeBytes: file.sizeBytes,
+  templateId: file.templateId,
+  status: file.status,
+  documentId: file.documentId,
+  errorMessage: file.errorMessage,
+  createdAt: file.createdAt,
+  startedAt: file.startedAt,
+  completedAt: file.completedAt,
 });

@@ -4,6 +4,7 @@ import {
   getActiveTemplate,
   getTemplate,
   getTemplateDocument,
+  getTemplateDocumentBytes,
   listTemplateDocuments,
   listTemplates,
   replaceTemplateDocuments,
@@ -18,6 +19,7 @@ export {
   getActiveTemplate,
   listTemplateDocuments,
   getTemplateDocument,
+  getTemplateDocumentBytes,
   replaceTemplateDocuments,
   toJobTemplate,
 };

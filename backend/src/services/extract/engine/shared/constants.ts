@@ -34,7 +34,6 @@ export const CLAUDE_MAX_RETRIES = 4;
 export const DEFAULT_CLAUDE_CONCURRENCY = 10;
 
 export const LINE_ITEMS_TOOL_NAME = "save_line_items";
-export const HEADER_TOOL_NAME = "save_document_header";
 
 export const MAX_TEXT_CHARS = 100_000;
 export const CHUNK_CHARS = 24_000;
@@ -52,11 +51,10 @@ export const CHUNK_CONCURRENCY = 3;
 export const READ_SHARE = 20;
 export const MAX_CONTINUATION_DEPTH = 4;
 
-export const MAX_PDF_BYTES = 20 * 1024 * 1024;
-export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 export const PDF_PART_PAGES = 100;
+/** Stay under Claude's 32 MB PDF document limit. */
+export const MAX_PDF_PART_BYTES = 28 * 1024 * 1024;
 
-export const HEAD_CHARS = 20_000;
 export const SCAN_PAGES = 3;
 
 export const LINE_TIMEOUT_MS = 180_000;

@@ -7,8 +7,11 @@ CREATE TABLE IF NOT EXISTS template_documents (
   stored_name TEXT NOT NULL,
   mime_type TEXT NOT NULL DEFAULT '',
   extracted_fields JSONB NOT NULL DEFAULT '[]'::jsonb,
+  file_data BYTEA,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE template_documents ADD COLUMN IF NOT EXISTS file_data BYTEA;
 
 CREATE INDEX IF NOT EXISTS template_documents_template
   ON template_documents (template_id, created_at ASC);

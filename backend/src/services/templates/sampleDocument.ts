@@ -1,14 +1,13 @@
-import fs from "node:fs/promises";
 import type Anthropic from "@anthropic-ai/sdk";
 import {
   officePlainText,
   pdfRowText,
+  renderPdfPageJpeg,
   sniffImageExtension,
   splitPdfParts,
   textIsUsable,
 } from "../extract/engine/read/documentText.js";
-import { IMAGE_MEDIA, MAX_IMAGE_BYTES, SCAN_PAGES } from "../extract/engine/shared/constants.js";
-import { HttpError } from "../../utils/httpError.js";
+import { IMAGE_MEDIA, MAX_PDF_PART_BYTES, SCAN_PAGES } from "../extract/engine/shared/constants.js";
 
 /** Keep samples small so template suggest stays as fast as extract-page header reads. */
 const SAMPLE_CHARS = 8_000;
@@ -120,6 +119,17 @@ const pdfVisionSample = async (
 ): Promise<SampleDocument | null> => {
   const [firstPages] = await splitPdfParts(buffer, VISION_PAGES);
   if (!firstPages) return null;
+  if (firstPages.length > MAX_PDF_PART_BYTES) {
+    const jpeg = await renderPdfPageJpeg(firstPages, 1);
+    return {
+      block: {
+        type: "image",
+        source: { type: "base64", media_type: "image/jpeg", data: jpeg.toString("base64") },
+      },
+      text: "",
+      vision: true,
+    };
+  }
   return {
     block: {
       type: "document",
@@ -137,23 +147,15 @@ const pdfVisionSample = async (
 
 /** Load a template-sample file as Claude text or vision content. */
 export const readSampleDocument = async (
-  filePath: string,
+  buffer: Buffer,
   originalName: string,
   options?: ReadSampleOptions,
 ): Promise<SampleDocument | null> => {
-  const buffer = await fs.readFile(filePath);
-  const pathExt = extensionOf(originalName) || extensionOf(filePath);
-  const imageExt = sniffImageExtension(originalName || filePath, buffer);
+  const pathExt = extensionOf(originalName);
+  const imageExt = sniffImageExtension(originalName, buffer);
   const ext = imageExt || pathExt;
   const imageMedia = IMAGE_MEDIA[ext];
   if (imageMedia) {
-    if (buffer.length > MAX_IMAGE_BYTES) {
-      throw new HttpError(
-        413,
-        "Images must be 5 MB or smaller for field suggestions.",
-        "IMAGE_TOO_LARGE",
-      );
-    }
     return {
       block: {
         type: "image",

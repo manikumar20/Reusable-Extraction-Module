@@ -43,5 +43,7 @@ export const mimeForFileName = (fileName: string, fallback = "application/octet-
     return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
   }
   if (lower.endsWith(".doc")) return "application/msword";
+  if (lower.endsWith(".txt")) return "text/plain";
+  if (lower.endsWith(".csv")) return "text/csv";
   return fallback;
 };

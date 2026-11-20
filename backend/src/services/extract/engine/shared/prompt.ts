@@ -1,7 +1,3 @@
-import { HEADER_TOOL_NAME } from "./constants.js";
-
-export { HEADER_TOOL_NAME };
-
 /**
  * Structural extraction instructions.
  * Per-field wording lives in fields.ts (tool schema descriptions).
@@ -11,14 +7,16 @@ export { HEADER_TOOL_NAME };
 export const SYSTEM_PROMPT =
   "You are a line-item extractor. Inspect the file and keep only rows that request a material, spare, or service. Write one compact buy line then the next, until every buy line in this part is written. Do not paste long specifications. Do not write item-number-only objects. Map whatever labels this file uses. Do not invent values. Manufacturer is the company name only. Skip questions, instructions, attachments, and commercial terms. Fill every property on each item from the tool schema; use an empty string or empty array when the row does not show the value.";
 
-export const headerUserText = (originalName: string) =>
-  [
-    `File name: "${originalName}".`,
-    `Read the header of this customer document and call ${HEADER_TOOL_NAME} once.`,
-    "Use an empty string for any field the document does not show. Never guess.",
-    "Fields the bidder must fill in (blank boxes, questionnaire answers) are not values.",
-    "Our own company appears as the supplier or vendor on some forms; it is never the customer.",
-  ].join(" ");
+export const TEMPLATE_SYSTEM_PROMPT =
+  "You extract the requested fields from a document. Return one item when the file is a single record, such as a form, letter, payslip, certificate, or medical record. Return one item per row when the file is a table of repeated records. Copy values that are printed in the file. Do not invent values. Leave a property as an empty string when the document does not show it.";
+
+export const templateUserText = (input: {
+  originalName: string;
+  fields: { key: string; label: string }[];
+}) => {
+  const list = input.fields.map((field) => `${field.label} (${field.key})`).join(", ");
+  return `Extract these fields from "${input.originalName}": ${list}. Use the file text. Put each value in the matching tool property. Do not leave the items list empty when the file contains any of these fields.`;
+};
 
 export const lineUserText = (input: {
   originalName: string;

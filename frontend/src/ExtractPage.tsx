@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { jobFromDocument } from "./jobFromDocument";
+import { jobFromDocument, mimeForFileName } from "./jobFromDocument";
 import { Results } from "./Results";
 import { apiUrl } from "./services/api";
 import {
-  createExtractionBatch,
-  getExtractionBatch,
-  listExtractionBatches,
-  type ExtractionBatch,
-  type ExtractionBatchFile,
+  deleteStagedFile,
+  getStagedFile,
+  listStagedFiles,
+  runStagedFile,
+  stageUploads,
+  type StagedFile,
 } from "./services/batches";
 import { downloadDriveFile, listDriveFiles } from "./services/drive";
 import {
@@ -22,57 +23,37 @@ import {
   type QueueItem,
 } from "./UploadPanel";
 
-const statusFromBatch = (
-  status: ExtractionBatch["status"],
-): QueueItem["status"] => {
-  if (status === "Uploaded") return "uploaded";
+const statusFromStaged = (status: StagedFile["status"]): QueueItem["status"] => {
+  if (status === "Uploaded") return "ready";
   if (status === "Processing") return "running";
   if (status === "Completed") return "done";
-  if (status === "Cancelled") return "cancelled";
   return "error";
 };
 
-const progressFromBatch = (status: ExtractionBatch["status"]) => {
+const progressFromStaged = (status: StagedFile["status"]) => {
   if (status === "Completed") return 100;
   if (status === "Processing") return 55;
-  if (status === "Uploaded") return 12;
   return 0;
 };
 
-const queueItemFromBatch = (
-  batch: ExtractionBatch,
-  files: ExtractionBatchFile[] = [],
-  existing?: QueueItem,
-): QueueItem => {
-  const completedDocs = files
-    .map((file) => file.documentId)
-    .filter((id): id is number => typeof id === "number");
-  const documentIds =
-    completedDocs.length > 0 ? [...new Set(completedDocs)] : existing?.documentIds;
-  const label =
-    files.length === 1
-      ? files[0]!.originalName
-      : batch.jobName?.trim() ||
-        (batch.fileCount === 1 ? existing?.fileName || "1 file" : `${batch.fileCount} files`);
-  return {
-    id: existing?.id || `batch-${batch.id}`,
-    kind: "batch",
-    fileName: label,
-    fileSize: batch.zipSizeBytes,
-    status: statusFromBatch(batch.status),
-    progress: progressFromBatch(batch.status),
-    message: batch.errorMessage || undefined,
-    batchId: batch.id,
-    zipFileName: batch.zipFileName,
-    fileCount: batch.fileCount,
-    documentIds,
-    documentId: documentIds?.[0] ?? existing?.documentId,
-    fieldCount: documentIds?.length ?? existing?.fieldCount,
-    saved: existing?.saved,
-  };
-};
-
-const placeholderFile = (name: string) => new File([], name);
+const queueItemFromStaged = (file: StagedFile, existing?: QueueItem): QueueItem => ({
+  id: existing?.id || `staged-${file.id}`,
+  kind: "file",
+  fileName: file.originalName,
+  fileSize: file.sizeBytes,
+  status: statusFromStaged(file.status),
+  progress: progressFromStaged(file.status),
+  message:
+    file.status === "Uploaded" ? "Compressed" : file.errorMessage || existing?.message,
+  stagedId: file.id,
+  compressed: true,
+  documentId: file.documentId ?? existing?.documentId,
+  documentIds: file.documentId != null ? [file.documentId] : existing?.documentIds,
+  saved: existing?.saved,
+  file: existing?.file,
+  attempts: existing?.attempts,
+  permanentlyFailed: existing?.permanentlyFailed,
+});
 
 const DISMISSED_BATCHES_KEY = "extractiq-dismissed-batches";
 
@@ -92,7 +73,7 @@ const writeDismissedBatches = (ids: Set<string>) => {
 
 const fallbackJob = (item: QueueItem): Job => ({
   id: item.jobId || `queue-${item.id}`,
-  fileName: item.file?.name || item.fileName || item.zipFileName || "Document",
+  fileName: item.file?.name || item.fileName || "Document",
   status: "done",
   phase: "done",
   progress: 100,
@@ -159,11 +140,8 @@ export const ExtractPage = () => {
             ...rest,
             {
               ...row,
-              kind: "file",
               status: "ready",
               progress: 0,
-              batchId: undefined,
-              zipFileName: undefined,
               permanentlyFailed: false,
               attempts: attempt,
               message: `Waiting to retry (${attempt}/${maxAttempts})…`,
@@ -202,26 +180,21 @@ export const ExtractPage = () => {
     }
   }, []);
 
-  const mergeBatchIntoQueue = useCallback(
-    (batch: ExtractionBatch, files: ExtractionBatchFile[] = []) => {
-      if (dismissedBatches.current.has(batch.id)) return;
-      setQueue((current) => {
-        const existing = current.find((row) => row.batchId === batch.id);
-        const nextItem = {
-          ...queueItemFromBatch(batch, files, existing),
-          id: existing?.id || `batch-${batch.id}`,
-          file: existing?.file,
-          attempts: existing?.attempts,
-          permanentlyFailed: existing?.permanentlyFailed,
-        };
-        if (existing) {
-          return current.map((row) => (row.batchId === batch.id ? nextItem : row));
-        }
-        return [nextItem, ...current];
-      });
-    },
-    [],
-  );
+  const mergeStagedIntoQueue = useCallback((file: StagedFile) => {
+    if (dismissedBatches.current.has(file.id)) return;
+    setQueue((current) => {
+      const existing = current.find((row) => row.stagedId === file.id);
+      const nextItem = queueItemFromStaged(file, existing);
+      if (existing?.status === "running" && nextItem.status === "ready") {
+        nextItem.status = "running";
+        nextItem.progress = existing.progress;
+      }
+      if (existing) {
+        return current.map((row) => (row.stagedId === file.id ? nextItem : row));
+      }
+      return [nextItem, ...current];
+    });
+  }, []);
 
   useEffect(() => {
     document.title = "Extract & Ingest · ExtractIQ";
@@ -273,20 +246,9 @@ export const ExtractPage = () => {
 
   useEffect(() => {
     let cancelled = false;
-    const hydrateBatches = async () => {
+    const hydrateStaged = async () => {
       try {
-        const batches = await listExtractionBatches();
-        if (cancelled) return;
-        const recent = batches.slice(0, 20);
-        const details = await Promise.all(
-          recent.map(async (batch) => {
-            try {
-              return await getExtractionBatch(batch.id);
-            } catch {
-              return { batch, files: [] as ExtractionBatchFile[] };
-            }
-          }),
-        );
+        const staged = await listStagedFiles();
         if (cancelled) return;
         const completedIds = new Set<number>();
         try {
@@ -296,34 +258,27 @@ export const ExtractPage = () => {
             for (const document of payload.documents ?? []) completedIds.add(document.id);
           }
         } catch {
-          // Saved batches stay visible only if the library cannot be read.
+          // Compressed uploads stay visible when the library cannot be read.
         }
         if (cancelled) return;
         setQueue((current) => {
-          const localReady = current.filter((row) => row.kind !== "batch" && !row.batchId);
-          const fromServer = details
-            .filter(({ batch, files }) => {
-              if (dismissedBatches.current.has(batch.id)) return false;
-              const documentIds = files
-                .map((file) => file.documentId)
-                .filter((id): id is number => typeof id === "number");
-              if (!documentIds.length) {
-                // Skip idle unsaved uploads that are not in-flight.
-                return batch.status === "Processing" || batch.status === "Failed";
+          const localOnly = current.filter((row) => !row.stagedId);
+          const fromServer = staged
+            .filter((file) => {
+              if (dismissedBatches.current.has(file.id)) return false;
+              if (file.documentId == null) {
+                return file.status === "Processing" || file.status === "Failed" || file.status === "Uploaded";
               }
-              return !documentIds.every((id) => completedIds.has(id));
+              return !completedIds.has(file.documentId);
             })
-            .map(({ batch, files }) => {
-              const existing = current.find((row) => row.batchId === batch.id);
-              return queueItemFromBatch(batch, files, existing);
-            });
-          return [...localReady, ...fromServer];
+            .map((file) => queueItemFromStaged(file, current.find((row) => row.stagedId === file.id)));
+          return [...localOnly, ...fromServer];
         });
       } catch {
-        // Queue still works without prior batch history.
+        // Queue still works without files left in temporary storage.
       }
     };
-    void hydrateBatches();
+    void hydrateStaged();
     return () => {
       cancelled = true;
     };
@@ -332,39 +287,34 @@ export const ExtractPage = () => {
   useEffect(() => {
     const needsDetail = queue.filter(
       (item) =>
-        item.batchId &&
-        (item.status === "uploaded" ||
-          item.status === "running" ||
-          (item.status === "done" && !(item.documentIds?.length || item.documentId != null))),
+        item.stagedId &&
+        (item.status === "running" || (item.status === "done" && item.documentId == null)),
     );
     if (!needsDetail.length) return;
-
     const refresh = () => {
       for (const item of needsDetail) {
-        void getExtractionBatch(item.batchId!)
-          .then((detail) => mergeBatchIntoQueue(detail.batch, detail.files))
+        void getStagedFile(item.stagedId!)
+          .then((detail) => mergeStagedIntoQueue(detail.file))
           .catch(() => undefined);
       }
     };
     refresh();
-    const timer = window.setInterval(refresh, 2500);
+    const timer = window.setInterval(refresh, 2000);
     return () => window.clearInterval(timer);
-  }, [queue, mergeBatchIntoQueue]);
+  }, [queue, mergeStagedIntoQueue]);
 
   const submitOneFile = useCallback(
     async (item: QueueItem, attempt: number) => {
       const template = templateRef.current;
       if (!template) {
         setUploadError("Set an active template under Templates before extracting.");
-        return { ok: false as const, errorMessage: "Set an active template under Templates before extracting." };
+        return { ok: false as const, errorMessage: "No active template." };
       }
-      const file = item.file;
-      if (!file) {
+      if (!item.file && !item.stagedId) {
         return { ok: false as const, errorMessage: "File is missing from the queue." };
       }
 
       setUploadError("");
-      setUploading(true);
       setQueue((current) =>
         current.map((row) =>
           row.id === item.id
@@ -376,55 +326,61 @@ export const ExtractPage = () => {
                 permanentlyFailed: false,
                 message:
                   attempt > 1
-                    ? `Attempt ${attempt}/${EXTRACTION_MAX_ATTEMPTS} · Uploading…`
-                    : "Uploading…",
+                    ? `Attempt ${attempt}/${EXTRACTION_MAX_ATTEMPTS} · Processing…`
+                    : "Processing…",
               }
             : row,
         ),
       );
 
       try {
-        const detail = await createExtractionBatch({
-          files: [file],
-          templateId: template.id,
-        });
-        // Keep FIFO position and original id/file so retries stay possible.
+        const detail = item.stagedId
+          ? await runStagedFile(item.stagedId)
+          : await stageUploads({
+              files: [item.file!],
+              templateId: template.id,
+            }).then(async (staged) => {
+              const first = staged.files[0];
+              if (!first) throw new Error("Compressed file was not stored.");
+              return { file: first };
+            });
+        const staged = detail.file;
         setQueue((current) =>
           current.map((row) => {
             if (row.id !== item.id) return row;
+            const next = queueItemFromStaged(staged, row);
             return {
-              ...queueItemFromBatch(detail.batch, detail.files, row),
+              ...next,
               id: row.id,
-              file: row.file ?? file,
+              file: row.file ?? item.file,
               attempts: attempt,
               permanentlyFailed: false,
+              status: staged.status === "Uploaded" ? "running" : next.status,
               message:
                 attempt > 1
                   ? `Attempt ${attempt}/${EXTRACTION_MAX_ATTEMPTS} · Processing…`
-                  : detail.batch.errorMessage || undefined,
+                  : staged.errorMessage || undefined,
             };
           }),
         );
-        if (detail.batch.status === "Processing" || detail.batch.status === "Uploaded") {
-          void getExtractionBatch(detail.batch.id)
-            .then((latest) => mergeBatchIntoQueue(latest.batch, latest.files))
+        if (staged.status === "Processing" || staged.status === "Uploaded") {
+          void getStagedFile(staged.id)
+            .then((latest) => mergeStagedIntoQueue(latest.file))
             .catch(() => undefined);
         }
-        if (detail.batch.status === "Completed") {
+        if (staged.status === "Completed") {
           void loadDocuments();
           return { ok: true as const, settled: true };
         }
-        if (detail.batch.status === "Failed" || detail.batch.status === "Cancelled") {
+        if (staged.status === "Failed") {
           return {
             ok: false as const,
-            errorMessage: detail.batch.errorMessage || "Extraction failed.",
+            errorMessage: staged.errorMessage || "Extraction failed.",
           };
         }
-        void loadDocuments();
-        return { ok: true as const, settled: false };
+        return { ok: true as const };
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Upload failed.";
-        setUploadError(message);
+        const message = error instanceof Error ? error.message : "Extraction failed.";
         setQueue((current) =>
           current.map((row) =>
             row.id === item.id
@@ -433,16 +389,13 @@ export const ExtractPage = () => {
           ),
         );
         return { ok: false as const, errorMessage: message };
-      } finally {
-        setUploading(false);
       }
     },
-    [loadDocuments, mergeBatchIntoQueue],
+    [loadDocuments, mergeStagedIntoQueue],
   );
 
   submitOneRef.current = submitOneFile;
 
-  // Release slots when in-flight items reach a terminal status (polled from the server).
   useEffect(() => {
     for (const item of queue) {
       if (!slotQueue.isAwaitingTerminal(item.id)) continue;
@@ -458,8 +411,8 @@ export const ExtractPage = () => {
   const startExtract = useCallback(
     (itemId: string) => {
       const snapshot = queueRef.current.find((row) => row.id === itemId);
-      if (!snapshot?.file || snapshot.kind === "batch") return;
-      if (snapshot.permanentlyFailed) return;
+      if (!snapshot || snapshot.permanentlyFailed) return;
+      if (!snapshot.file && !snapshot.stagedId) return;
       slotQueue.schedule([itemId]);
     },
     [slotQueue],
@@ -469,13 +422,55 @@ export const ExtractPage = () => {
     const ready = queueRef.current.filter(
       (item) =>
         item.status === "ready" &&
-        item.file &&
-        item.kind !== "batch" &&
+        (item.file || item.stagedId) &&
         !item.permanentlyFailed,
     );
     if (!ready.length) return;
     slotQueue.schedule(ready.map((item) => item.id));
   }, [slotQueue]);
+
+  const compressIncoming = useCallback(async (files: File[]) => {
+    if (!files.length) return;
+    setUploadError("");
+    setUploading(true);
+    const failures: string[] = [];
+    try {
+      for (let index = 0; index < files.length; index += 50) {
+        const chunk = files.slice(index, index + 50);
+        try {
+          const { files: staged } = await stageUploads({
+            files: chunk,
+            run: false,
+            deferTemplate: true,
+          });
+          setQueue((current) => [
+            ...current,
+            ...staged.map((file) => queueItemFromStaged(file)),
+          ]);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Could not compress the upload.";
+          failures.push(message);
+          setQueue((current) => [
+            ...current,
+            ...chunk.map((file) => ({
+              id: crypto.randomUUID(),
+              kind: "file" as const,
+              file,
+              fileName: file.name,
+              fileSize: file.size,
+              status: "ready" as const,
+              progress: 0,
+            })),
+          ]);
+        }
+      }
+    } finally {
+      setUploading(false);
+    }
+    if (failures.length) {
+      setUploadError(failures[0] || "Could not compress the upload.");
+    }
+  }, []);
 
   const saveToDocuments = useCallback(async () => {
     const collectIds = (items: QueueItem[]) =>
@@ -483,22 +478,16 @@ export const ExtractPage = () => {
         ...new Set(
           items.flatMap((item) => {
             const fromList = item.documentIds ?? [];
-            return typeof item.documentId === "number"
-              ? [...fromList, item.documentId]
-              : fromList;
+            return typeof item.documentId === "number" ? [...fromList, item.documentId] : fromList;
           }),
         ),
       ];
 
-    const targets = queueRef.current.filter((item) => {
-      if (item.saved) return false;
-      if (item.status === "done") return true;
-      return item.status === "error" && Boolean(item.batchId);
-    });
+    const targets = queueRef.current.filter((item) => !item.saved && item.status === "done");
     let ids = collectIds(targets);
 
     if (!ids.length) {
-      const pending = targets.filter((item) => item.batchId);
+      const pending = targets.filter((item) => item.stagedId);
       if (!pending.length) {
         setUploadError("Extract the files, then save them to Documents.");
         return;
@@ -506,21 +495,19 @@ export const ExtractPage = () => {
       setUploadError("Loading extracted documents…");
       const details = await Promise.all(
         pending.map((item) =>
-          getExtractionBatch(item.batchId!)
+          getStagedFile(item.stagedId!)
             .then((detail) => {
-              mergeBatchIntoQueue(detail.batch, detail.files);
-              return detail;
+              mergeStagedIntoQueue(detail.file);
+              return detail.file;
             })
             .catch(() => null),
         ),
       );
       ids = [
         ...new Set(
-          details.flatMap((detail) =>
-            (detail?.files ?? [])
-              .map((file) => file.documentId)
-              .filter((id): id is number => typeof id === "number"),
-          ),
+          details
+            .map((file) => file?.documentId)
+            .filter((id): id is number => typeof id === "number"),
         ),
       ];
       if (!ids.length) {
@@ -539,14 +526,15 @@ export const ExtractPage = () => {
         body: JSON.stringify({ ids }),
       });
       if (!response.ok) throw new Error("Documents could not be saved.");
-      const savedBatchIds = targets
-        .map((item) => item.batchId)
+      const savedIds = targets
+        .map((item) => item.stagedId)
         .filter((id): id is string => Boolean(id));
-      if (savedBatchIds.length) {
+      if (savedIds.length) {
         const nextDismissed = new Set(dismissedBatches.current);
-        for (const batchId of savedBatchIds) nextDismissed.add(batchId);
+        for (const stagedId of savedIds) nextDismissed.add(stagedId);
         dismissedBatches.current = nextDismissed;
         writeDismissedBatches(nextDismissed);
+        await Promise.all(savedIds.map((id) => deleteStagedFile(id).catch(() => undefined)));
       }
       setQueue((current) =>
         current.filter((item) => {
@@ -570,45 +558,38 @@ export const ExtractPage = () => {
     } finally {
       setSaving(false);
     }
-  }, [loadDocuments, mergeBatchIntoQueue]);
+  }, [loadDocuments, mergeStagedIntoQueue]);
 
-  const importFromDrive = useCallback(async (url: string) => {
-    setUploadError("");
-    const listed = await listDriveFiles(url);
-    if (!listed.files.length) {
-      setUploadError("No files found for that Drive link.");
-      return;
-    }
-    const files: File[] = [];
-    const failures: string[] = [];
-    for (const entry of listed.files) {
-      try {
-        files.push(await downloadDriveFile(entry));
-      } catch (error) {
-        failures.push(
-          `${entry.name}: ${error instanceof Error ? error.message : "download failed"}`,
-        );
+  const importFromDrive = useCallback(
+    async (url: string) => {
+      setUploadError("");
+      const listed = await listDriveFiles(url);
+      if (!listed.files.length) {
+        setUploadError("No files found for that Drive link.");
+        return;
       }
-    }
-    setQueue((current) => [
-      ...current,
-      ...files.map((file) => ({
-        id: crypto.randomUUID(),
-        kind: "file" as const,
-        file,
-        fileName: file.name,
-        fileSize: file.size,
-        status: "ready" as const,
-        progress: 0,
-      })),
-    ]);
-    if (failures.length) {
-      setUploadError(`Loaded ${files.length} file(s). Skipped: ${failures.join("; ")}`);
-    }
-  }, []);
+      const files: File[] = [];
+      const failures: string[] = [];
+      for (const entry of listed.files) {
+        try {
+          files.push(await downloadDriveFile(entry));
+        } catch (error) {
+          failures.push(
+            `${entry.name}: ${error instanceof Error ? error.message : "download failed"}`,
+          );
+        }
+      }
+      if (files.length) await compressIncoming(files);
+      if (failures.length) {
+        setUploadError(`Loaded ${files.length} file(s). Skipped: ${failures.join("; ")}`);
+      }
+    },
+    [compressIncoming],
+  );
 
   const closeInspect = useCallback(() => {
     setInspecting(false);
+    setPreviewFile(null);
     setInspectFields([]);
     setInspectDocumentId(null);
     setInspectJobSnapshot(null);
@@ -625,7 +606,8 @@ export const ExtractPage = () => {
 
     const snapshot = item.result ?? fallbackJob(item);
     setInspectJobSnapshot(snapshot);
-    setPreviewFile(item.file ?? placeholderFile(item.fileName || item.zipFileName || "Document"));
+    const localFile = item.file && item.file.size > 0 ? item.file : null;
+    setPreviewFile(localFile);
 
     const docs = documentsRef.current;
     const matched =
@@ -665,6 +647,21 @@ export const ExtractPage = () => {
           setQueue((current) =>
             current.map((row) => (row.id === itemId ? { ...row, documentId: resolvedId! } : row)),
           );
+        }
+
+        if (!localFile) {
+          const fileResponse = await fetch(apiUrl(`/documents/${resolvedId}/file`));
+          if (fileResponse.ok) {
+            const blob = await fileResponse.blob();
+            if (blob.size) {
+              const name = item.file?.name || item.fileName || "Document";
+              const type = mimeForFileName(
+                name,
+                blob.type || fileResponse.headers.get("Content-Type") || "",
+              );
+              setPreviewFile(new File([blob], name, { type }));
+            }
+          }
         }
 
         for (let attempt = 0; attempt < 6; attempt += 1) {
@@ -736,19 +733,7 @@ export const ExtractPage = () => {
           queue={queue}
           saving={saving}
           onAddFiles={(files) => {
-            setUploadError("");
-            setQueue((current) => [
-              ...current,
-              ...files.map((file) => ({
-                id: crypto.randomUUID(),
-                kind: "file" as const,
-                file,
-                fileName: file.name,
-                fileSize: file.size,
-                status: "ready" as const,
-                progress: 0,
-              })),
-            ]);
+            void compressIncoming(files);
           }}
           onExtract={startExtract}
           onExtractAll={extractAll}
@@ -757,11 +742,12 @@ export const ExtractPage = () => {
           onInspect={openInspect}
           onRemove={(itemId) => {
             const item = queueRef.current.find((row) => row.id === itemId);
-            if (item?.batchId) {
+            if (item?.stagedId) {
               const nextDismissed = new Set(dismissedBatches.current);
-              nextDismissed.add(item.batchId);
+              nextDismissed.add(item.stagedId);
               dismissedBatches.current = nextDismissed;
               writeDismissedBatches(nextDismissed);
+              void deleteStagedFile(item.stagedId).catch(() => undefined);
             }
             slotQueue.forget(itemId);
             setQueue((current) => current.filter((row) => row.id !== itemId));

@@ -9,6 +9,7 @@ export type SlotQueueItem = {
   status: string;
   kind?: string;
   file?: File;
+  stagedId?: string;
   permanentlyFailed?: boolean;
 };
 
@@ -121,8 +122,7 @@ export class ExtractionSlotQueue {
       if (!this.scheduled.has(item.id)) continue;
       if (item.permanentlyFailed) continue;
       if (item.status !== "ready") continue;
-      if (item.kind === "batch" && !item.file) continue;
-      if (!item.file) continue;
+      if (!item.file && !item.stagedId) continue;
       if (this.active.has(item.id) || this.starting.has(item.id)) continue;
       const attempts = this.attempts.get(item.id) ?? 0;
       if (attempts >= EXTRACTION_MAX_ATTEMPTS) continue;

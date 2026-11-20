@@ -1,10 +1,11 @@
 import type { Request, Response } from "express";
 import {
-  createBatchFromUploads,
-  getBatchDetail,
-  listExtractionBatches,
-  publicBatch,
-  runBatchNow,
+  discardStagedFile,
+  getStagedFile,
+  listCompressedFiles,
+  publicStagedFile,
+  runStagedFile,
+  stageUploads,
 } from "../../services/batches/batchService.js";
 import { AppError, HTTP_STATUS } from "../../utils/errors/index.js";
 import type { CreateBatchBody } from "../../validators/batches/batchValidators.js";
@@ -24,44 +25,44 @@ export const handleCreateBatch = async (request: Request, response: Response) =>
   }
 
   const body = request.body as CreateBatchBody;
-  const jobName = formText(body.jobName) || undefined;
   const templateId = formText(body.templateId) || undefined;
-
-  const batch = await createBatchFromUploads({
+  const staged = await stageUploads({
     files: files.map((file) => ({
       originalname: file.originalname,
-      path: file.path,
+      buffer: file.buffer,
       size: file.size,
       mimetype: file.mimetype,
     })),
-    jobName,
     templateId,
+    deferTemplate: body.deferTemplate === true,
   });
 
-  const detail = await runBatchNow(batch.id);
+  if (body.run !== false) {
+    await Promise.all(staged.map((file) => runStagedFile(file.id)));
+  }
+
+  const latest = await Promise.all(staged.map((file) => getStagedFile(file.id)));
   response.status(HTTP_STATUS.ACCEPTED).json({
-    batch: publicBatch(detail.batch),
-    files: detail.files,
+    files: latest.map(publicStagedFile),
   });
 };
 
 export const handleListBatches = async (_request: Request, response: Response) => {
-  const batches = await listExtractionBatches();
-  response.json({ batches: batches.map(publicBatch) });
+  const files = await listCompressedFiles();
+  response.json({ files: files.map(publicStagedFile) });
 };
 
 export const handleGetBatch = async (request: Request, response: Response) => {
-  const detail = await getBatchDetail(String(request.params.id));
-  response.json({
-    batch: publicBatch(detail.batch),
-    files: detail.files,
-  });
+  const file = await getStagedFile(String(request.params.id));
+  response.json({ file: publicStagedFile(file) });
 };
 
 export const handleRunBatch = async (request: Request, response: Response) => {
-  const detail = await runBatchNow(String(request.params.id));
-  response.status(HTTP_STATUS.ACCEPTED).json({
-    batch: publicBatch(detail.batch),
-    files: detail.files,
-  });
+  const file = await runStagedFile(String(request.params.id));
+  response.status(HTTP_STATUS.ACCEPTED).json({ file: publicStagedFile(file) });
+};
+
+export const handleDeleteBatch = async (request: Request, response: Response) => {
+  await discardStagedFile(String(request.params.id));
+  response.status(HTTP_STATUS.NO_CONTENT).end();
 };

@@ -1,10 +1,5 @@
 import { env } from "../../config/env.js";
-import {
-  ALLOWED_EXTENSIONS,
-  IMAGE_EXTENSIONS,
-  MAX_IMAGE_BYTES,
-  MAX_UPLOAD_BYTES,
-} from "../../middleware/documentUpload.js";
+import { ALLOWED_EXTENSIONS } from "../../middleware/documentUpload.js";
 import { AppError, HTTP_STATUS } from "../../utils/errors/index.js";
 
 const DRIVE_API = "https://www.googleapis.com/drive/v3";
@@ -400,18 +395,6 @@ export const downloadDriveFile = async (fileId: string, resourceKey?: string) =>
       );
 
   const buffer = Buffer.from(await response.arrayBuffer());
-  const extension = extensionOf(listed.name);
-  const isImage = IMAGE_EXTENSIONS.includes(extension);
-  const limit = isImage ? MAX_IMAGE_BYTES : MAX_UPLOAD_BYTES;
-  if (buffer.length > limit) {
-    throw AppError(
-      HTTP_STATUS.PAYLOAD_TOO_LARGE,
-      isImage
-        ? `Images must be ${MAX_IMAGE_BYTES / (1024 * 1024)} MB or smaller.`
-        : `File is larger than ${MAX_UPLOAD_BYTES / (1024 * 1024)} MB.`,
-      { code: "DRIVE_FILE_TOO_LARGE" },
-    );
-  }
 
   return {
     fileName: listed.name,

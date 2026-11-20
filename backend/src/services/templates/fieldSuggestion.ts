@@ -1,9 +1,7 @@
 import { createHash } from "node:crypto";
-import fs from "node:fs/promises";
 import Anthropic from "@anthropic-ai/sdk";
 import {
   FIELD_DATA_TYPES,
-  HEADER_FIELDS,
   LINE_FIELDS,
   type CatalogField,
   type FieldDataType,
@@ -104,21 +102,10 @@ const detectTemplateFields = async (
     });
   }
 
-  // Header + line catalogue (dedupe shared keys such as payment_terms).
-  const catalog: CatalogField[] = [];
-  const catalogKeys = new Set<string>();
-  for (const entry of [...HEADER_FIELDS, ...LINE_FIELDS]) {
-    if (catalogKeys.has(entry.key)) continue;
-    catalogKeys.add(entry.key);
-    catalog.push(entry);
-  }
-  const headerKeySet = new Set(HEADER_FIELDS.map((entry) => entry.key));
-  // Key + label only — full descriptions bloat the prompt (~10k+ tokens) and slow every run.
+  const catalog = LINE_FIELDS;
+  // Key + label only — full descriptions bloat the prompt and slow every run.
   const catalogText = catalog
-    .map((entry) => {
-      const scope = headerKeySet.has(entry.key) ? "header" : "line";
-      return `- ${entry.key} (${entry.label}) [${scope}]`;
-    })
+    .map((entry) => `- ${entry.key} (${entry.label})`)
     .join("\n");
 
   const tool: Anthropic.Tool = {
@@ -463,7 +450,7 @@ const detectTemplateFields = async (
 };
 
 const CACHE_LIMIT = 200;
-const CACHE_VERSION = "v9-grounded-match";
+const CACHE_VERSION = "v10-line-fields";
 const resultsByFile = new Map<string, FieldSuggestions>();
 
 const mergeUsage = (
@@ -477,7 +464,7 @@ const mergeUsage = (
 });
 
 export const suggestTemplateFields = async (
-  filePath: string,
+  fileBuffer: Buffer,
   originalName: string,
 ): Promise<FieldSuggestions> => {
   if (!hasClaudeCredentials()) {
@@ -489,7 +476,7 @@ export const suggestTemplateFields = async (
     CACHE_VERSION +
     ":" +
     createHash("sha256")
-      .update(await fs.readFile(filePath))
+      .update(fileBuffer)
       .digest("hex");
   const cached = resultsByFile.get(fileHash);
   if (cached) {
@@ -499,7 +486,7 @@ export const suggestTemplateFields = async (
     };
   }
 
-  const sample = await readSampleDocument(filePath, originalName);
+  const sample = await readSampleDocument(fileBuffer, originalName);
   if (!sample) {
     throw AppError(HTTP_STATUS.BAD_REQUEST, "No readable content was found in this document.", {
       code: "DOCUMENT_UNREADABLE",
@@ -515,7 +502,7 @@ export const suggestTemplateFields = async (
     !result.matched.length &&
     !result.suggested.length
   ) {
-    const visionSample = await readSampleDocument(filePath, originalName, { forceVision: true });
+    const visionSample = await readSampleDocument(fileBuffer, originalName, { forceVision: true });
     if (visionSample?.vision) {
       console.info(`Template suggest retrying "${originalName}" with PDF vision.`);
       const retry = await detectTemplateFields(originalName, visionSample);

@@ -24,6 +24,9 @@ export type QueueItem = {
   /** Completed extraction snapshot — used by Inspect Results even after SSE closes. */
   result?: Job;
   batchId?: string;
+  /** Temporary compressed file waiting in local storage. */
+  stagedId?: string;
+  compressed?: boolean;
   zipFileName?: string;
   fileCount?: number;
   /** Extraction attempts used by the slot FIFO scheduler (max 3). */
@@ -37,7 +40,7 @@ type UploadPanelProps = {
   uploading: boolean;
   uploadError: string;
   liveError: string;
-  activeTemplate: { name: string } | null;
+  activeTemplate: { id?: string; name: string } | null;
   queue: QueueItem[];
   saving?: boolean;
   onAddFiles: (files: File[]) => void;
@@ -279,20 +282,20 @@ export const UploadPanel = ({
     };
   }, [browseOpen]);
   const accept = config?.accept ?? FALLBACK_ACCEPT;
-  const maxUpload = config?.maxUploadMb ?? 25;
-  const maxImage = config?.maxImageMb ?? 5;
   const busy =
     uploading ||
     driveLoading ||
     job?.status === "running" ||
     queue.some((item) => item.status === "running" || item.status === "uploaded");
-  const readyCount = queue.filter((item) => item.status === "ready" && item.kind !== "batch").length;
+  const readyCount = queue.filter(
+    (item) => item.status === "ready" && (item.file || item.stagedId) && !item.permanentlyFailed,
+  ).length;
   const savableCount = queue.filter((item) => {
     if (item.saved) return false;
     if (item.status === "done") {
       return typeof item.documentId === "number" || (item.documentIds?.length ?? 0) > 0;
     }
-    return item.status === "error" && Boolean(item.batchId);
+    return item.status === "error" && Boolean(item.stagedId || item.batchId);
   }).length;
   const canSave = savableCount > 0 && !busy && !saving;
 
@@ -314,13 +317,6 @@ export const UploadPanel = ({
   const validate = (file: File) => {
     const ext = extensionOf(file.name);
     if (!accept.includes(ext)) return "Use a PDF, Word, Excel, text, or image file.";
-    const image = [".jpg", ".jpeg", ".png", ".gif", ".webp"].includes(ext);
-    const limit = (image ? maxImage : maxUpload) * 1024 * 1024;
-    if (file.size > limit) {
-      return image
-        ? `Images must be ${maxImage} MB or smaller.`
-        : `File is larger than ${maxUpload} MB.`;
-    }
     return "";
   };
 
@@ -392,31 +388,32 @@ export const UploadPanel = ({
   };
 
   const message = localError || uploadError || liveError;
-  const extractAllLabel =
-    readyCount > 1 ? `Extract All (${readyCount})` : "Extract All";
+
+  const templateBar = (
+    <div className="ingest-toolbar">
+      <div className="ingest-template">
+        <span
+          className={activeTemplate ? "ingest-status-dot on" : "ingest-status-dot"}
+          aria-hidden="true"
+          title={activeTemplate ? "Template in use" : "No active template"}
+        />
+        <span className="ingest-template-label">Template</span>
+        <div className="ingest-template-pill">
+          <span className="ingest-template-using">
+            <strong>{activeTemplate?.name ?? "No template selected"}</strong>
+          </span>
+        </div>
+        {!activeTemplate && (
+          <Link className="ingest-template-link" to="/templates">
+            Open Templates
+          </Link>
+        )}
+      </div>
+    </div>
+  );
 
   return (
     <div className="ingest">
-      <div className="ingest-toolbar">
-        <div className="ingest-template">
-          <span
-            className={activeTemplate ? "ingest-status-dot on" : "ingest-status-dot"}
-            aria-hidden="true"
-            title={activeTemplate ? "Template in use" : "No active template"}
-          />
-          <div className="ingest-template-pill">
-            <span className="ingest-template-using">
-              <strong>{activeTemplate?.name ?? "No template selected"}</strong>
-            </span>
-          </div>
-          {!activeTemplate && (
-            <Link className="ingest-template-link" to="/templates">
-              Open Templates
-            </Link>
-          )}
-        </div>
-      </div>
-
       {queue.length === 0 ? (
         <div
           className={dragOver ? "ingest-drop over" : "ingest-drop"}
@@ -437,13 +434,42 @@ export const UploadPanel = ({
               .catch(() => setLocalError("Could not read that folder. Use Browse, then choose Folder."));
           }}
         >
-          <div className="ingest-drop-icon" aria-hidden="true">
-            <span />
+          <div className="ingest-template-picker">
+            <span className="ingest-choice active">
+              <span className="ingest-choice-dot" aria-hidden="true" />
+              {activeTemplate?.name ?? "No template selected"}
+            </span>
           </div>
-          <h2>Drop files or a folder here to extract structured fields.</h2>
-          <p>
-            Supports PDF, PNG, JPG, DOCX, XLSX, CSV · folders included · up to {Math.max(maxUpload, maxImage)}MB each
-          </p>
+          <div className="ingest-drop-lead">
+            <span className="ingest-drop-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <path d="M12 16V7" strokeLinecap="round" />
+                <path d="M8.5 10.5 12 7l3.5 3.5" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M6 16.5a4 4 0 0 1 .4-7.2A5.5 5.5 0 0 1 17 9.2 3.5 3.5 0 0 1 18 16.5" strokeLinecap="round" />
+              </svg>
+            </span>
+            <p className="ingest-drop-kicker">Upload</p>
+            <h2>Drop files or a folder.</h2>
+            <p>PDF, PNG, JPG, DOCX, XLSX, CSV. Folders included.</p>
+            <button type="button" className="ingest-try" onClick={() => fileRef.current?.click()}>
+              Try an example
+            </button>
+            <div className="ingest-samples">
+              {SAMPLE_CHIPS.map((name) => (
+                <button
+                  key={name}
+                  type="button"
+                  className="ingest-sample"
+                  title="Browse your own file"
+                  onClick={() => fileRef.current?.click()}
+                >
+                  <DocTypeIcon fileName={name} size={16} />
+                  {name}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="ingest-drop-panel">
           <div className="ingest-drop-actions">
             <div className="browse-wrap" ref={browseRef}>
               <button
@@ -454,7 +480,10 @@ export const UploadPanel = ({
                 aria-haspopup="menu"
                 onClick={() => setBrowseOpen((open) => !open)}
               >
-                Browse
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v8A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5v-10Z" />
+                </svg>
+                Browse files
               </button>
               {browseOpen ? (
                 <div className="browse-menu" role="menu">
@@ -492,6 +521,9 @@ export const UploadPanel = ({
               ) : null}
             </div>
           </div>
+          <div className="ingest-or" role="separator">
+            <span>or import from drive</span>
+          </div>
           <form
             className="ingest-drive"
             onSubmit={(event) => {
@@ -511,43 +543,10 @@ export const UploadPanel = ({
               {driveLoading ? "Loading Drive…" : "Load from Drive"}
             </button>
           </form>
-          <div className="ingest-samples">
-            {SAMPLE_CHIPS.map((name) => (
-              <button
-                key={name}
-                type="button"
-                className="ingest-sample"
-                title="Sample names are illustrative — browse or drop your own file"
-                onClick={() => fileRef.current?.click()}
-              >
-                {name}
-              </button>
-            ))}
           </div>
         </div>
       ) : null}
 
-      {queue.length > 0 && (
-        <form
-          className="ingest-drive queue"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void loadDrive();
-          }}
-        >
-          <input
-            type="url"
-            value={driveUrl}
-            onChange={(event) => setDriveUrl(event.target.value)}
-            placeholder="Paste a Google Drive folder or file link"
-            aria-label="Google Drive link"
-            disabled={driveLoading}
-          />
-          <button type="submit" className="ingest-secondary" disabled={!driveUrl.trim() || driveLoading}>
-            {driveLoading ? "Loading Drive…" : "Load from Drive"}
-          </button>
-        </form>
-      )}
       <input
         ref={fileRef}
         type="file"
@@ -577,47 +576,77 @@ export const UploadPanel = ({
       )}
 
       {queue.length > 0 && (
-        <section className="ingest-queue">
+        <section className="ingest-board">
+          <div className="ingest-board-top">
+            {templateBar}
+            <form
+              className="ingest-drive queue"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void loadDrive();
+              }}
+            >
+              <label className="ingest-drive-field">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M10 13a5 5 0 0 0 7.1.1l2.2-2.2a5 5 0 0 0-7.1-7.1l-1.2 1.2" />
+                  <path d="M14 11a5 5 0 0 0-7.1-.1L4.7 13a5 5 0 0 0 7.1 7.1l1.1-1.1" />
+                </svg>
+                <input
+                  type="url"
+                  value={driveUrl}
+                  onChange={(event) => setDriveUrl(event.target.value)}
+                  placeholder="Paste a Google Drive folder or file link"
+                  aria-label="Google Drive link"
+                  disabled={driveLoading}
+                />
+              </label>
+              <button type="submit" className="ingest-secondary" disabled={!driveUrl.trim() || driveLoading}>
+                {driveLoading ? "Loading Drive…" : "Load from Drive"}
+              </button>
+            </form>
+          </div>
+          <div className="ingest-queue">
           <header className="ingest-queue-head">
             <h3>
-              Active Upload Queue <span>({queue.length})</span>
+              Active Upload Queue
+              <span className="ingest-queue-count">
+                {queue.length} file{queue.length === 1 ? "" : "s"}
+              </span>
             </h3>
             <div className="ingest-queue-tools">
               <button
                 type="button"
-                className="ingest-browse"
-                disabled={!readyCount || busy}
-                onClick={onExtractAll}
+                className="ingest-tool"
+                disabled={busy}
+                onClick={() => fileRef.current?.click()}
               >
-                {extractAllLabel}
+                + Add files
+              </button>
+              <button
+                type="button"
+                className="ingest-tool"
+                disabled={busy}
+                onClick={() => folderRef.current?.click()}
+              >
+                + Add folder
               </button>
               {savableCount > 0 && (
                 <button
                   type="button"
-                  className="ingest-browse"
+                  className="ingest-tool"
                   disabled={!canSave}
                   onClick={onSave}
                 >
-                  {saving ? "Saving…" : `Save${savableCount > 1 ? ` (${savableCount})` : ""}`}
+                  {saving ? "Saving…" : "Save"}
                 </button>
               )}
               <button
                 type="button"
-                className="ingest-add-files"
-                disabled={busy}
-                onClick={() => fileRef.current?.click()}
+                className="ingest-tool solid"
+                disabled={!readyCount || busy}
+                onClick={onExtractAll}
               >
-                <span className="app-btn-plus" aria-hidden="true">+</span>
-                Add files
-              </button>
-              <button
-                type="button"
-                className="ingest-add-files"
-                disabled={busy}
-                onClick={() => folderRef.current?.click()}
-              >
-                <span className="app-btn-plus" aria-hidden="true">+</span>
-                Add folder
+                Extract All
               </button>
             </div>
           </header>
@@ -627,12 +656,21 @@ export const UploadPanel = ({
               const name = queueItemName(item);
               const sizeLabel = queueItemSizeLabel(item);
               const isBatch = item.kind === "batch" || Boolean(item.batchId);
+              const compressed = Boolean(item.compressed || item.zipFileName);
+              const ext = (name.includes(".") ? name.split(".").pop() : "file")?.slice(0, 4).toUpperCase() || "FILE";
+              const percent = Math.min(
+                100,
+                Math.max(
+                  0,
+                  Math.round(
+                    item.progress || (job && job.id === item.jobId ? job.progress : 0) || (item.status === "running" ? 8 : 0),
+                  ),
+                ),
+              );
               return (
                 <li key={item.id} className={`ingest-queue-row status-${item.status}`}>
                   <div className="ingest-queue-file">
-                    <span className="ingest-queue-mark" aria-hidden="true">
-                      <DocTypeIcon fileName={name} size={28} />
-                    </span>
+                    <span className="ingest-ext" aria-hidden="true">{ext}</span>
                     <div>
                       <strong>{name}</strong>
                       <span>
@@ -640,6 +678,7 @@ export const UploadPanel = ({
                         {isBatch && item.fileCount
                           ? `${sizeLabel ? " · " : ""}${item.fileCount} file${item.fileCount === 1 ? "" : "s"}`
                           : ""}
+                        {item.status === "ready" && compressed ? " · Compressed" : ""}
                       </span>
                     </div>
                   </div>
@@ -651,28 +690,49 @@ export const UploadPanel = ({
                     )}
                     {item.status === "running" && (
                       <div className="ingest-running">
+                        <div
+                          className="ingest-progress"
+                          role="progressbar"
+                          aria-valuenow={percent}
+                          aria-valuemin={0}
+                          aria-valuemax={100}
+                          aria-label={`${percent} percent extracted`}
+                        >
+                          <svg viewBox="0 0 40 40" aria-hidden="true">
+                            <circle className="ingest-progress-track" cx="20" cy="20" r="15.5" />
+                            <circle
+                              className="ingest-progress-fill"
+                              cx="20"
+                              cy="20"
+                              r="15.5"
+                              style={{
+                                strokeDasharray: `${2 * Math.PI * 15.5}`,
+                                strokeDashoffset: `${2 * Math.PI * 15.5 * (1 - percent / 100)}`,
+                              }}
+                            />
+                          </svg>
+                          <strong className="ingest-progress-value">{percent}%</strong>
+                        </div>
                         <span className="ingest-pill running">
                           {item.attempts && item.attempts > 1
-                            ? `Processing · try ${item.attempts}/${EXTRACTION_MAX_ATTEMPTS}…`
-                            : isBatch
-                              ? "Processing…"
-                              : job && job.id === item.jobId
-                                ? phaseLabel(job)
-                                : "Processing…"}
+                            ? `Try ${item.attempts}/${EXTRACTION_MAX_ATTEMPTS}`
+                            : "Processing"}
                         </span>
-                        <div className="ingest-progress" aria-hidden="true">
-                          <span style={{ width: `${item.progress || job?.progress || 8}%` }} />
-                        </div>
                       </div>
                     )}
                     {item.status === "done" && (
                       <span className={`ingest-pill done${item.saved ? " saved" : ""}`}>
+                        <span className="ingest-pill-mark" aria-hidden="true">
+                          <svg viewBox="0 0 16 16" width="11" height="11">
+                            <path d="M3.2 8.2 6.3 11.2 12.8 4.6" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                        </span>
                         {item.saved
-                          ? "Saved to Documents"
-                          : isBatch
-                            ? `✓ Complete · ${item.fileCount ?? 0} file${(item.fileCount ?? 0) === 1 ? "" : "s"}`
-                            : `✓ ${item.fieldCount ?? 0} fields extracted${
-                                item.confidence != null ? `, ${item.confidence}% confidence` : ""
+                          ? "Saved"
+                          : compressed
+                            ? "Complete"
+                            : `${item.fieldCount ?? 0} fields${
+                                item.confidence != null ? ` · ${item.confidence}%` : ""
                               }`}
                       </span>
                     )}
@@ -689,11 +749,12 @@ export const UploadPanel = ({
                   </div>
 
                   <div className="ingest-queue-template">
-                    {activeTemplate?.name ?? "—"}
+                    <span className="ingest-template-dot" aria-hidden="true" />
+                    {activeTemplate?.name ?? "No template"}
                   </div>
 
                   <div className="ingest-queue-actions">
-                    {item.status === "ready" && !isBatch && (
+                    {item.status === "ready" && (item.file || item.stagedId || item.batchId) && (
                       <button
                         type="button"
                         className="ingest-row-btn"
@@ -706,11 +767,17 @@ export const UploadPanel = ({
                     {item.status === "done" && !isBatch && (
                       <button type="button" className="ingest-row-btn ghost" onClick={() => onInspect(item.id)}>
                         Inspect Results
+                        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                          <path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
                       </button>
                     )}
                     {item.status === "done" && isBatch && item.documentId != null && (
                       <button type="button" className="ingest-row-btn ghost" onClick={() => onInspect(item.id)}>
                         Inspect Results
+                        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                          <path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
                       </button>
                     )}
                     {item.status !== "running" && item.status !== "uploaded" && (
@@ -728,15 +795,9 @@ export const UploadPanel = ({
               );
             })}
           </ul>
+          </div>
         </section>
       )}
     </div>
   );
-};
-
-const phaseLabel = (job: Job) => {
-  if (job.phase === "reading") return "Reading file…";
-  if (job.phase === "lines") return "Extracting line items…";
-  if (job.phase === "header") return "Reading document header…";
-  return `Processing… ${job.progress}%`;
 };

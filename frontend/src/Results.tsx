@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent } from "react";
+import { Component, useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent, type ReactNode } from "react";
 import {
   ChevronLeft,
   ChevronRight,
@@ -14,7 +14,9 @@ import {
   ArrowLeft,
 } from "lucide-react";
 import { Document, Page } from "react-pdf";
+import "react-pdf/dist/Page/TextLayer.css";
 import { extensionOf, formatValue } from "./format";
+import { highlightHtmlText, highlightPdfText } from "./highlightFields.js";
 import "./pdfWorker";
 import { apiUrl } from "./services/api";
 import type {
@@ -111,7 +113,7 @@ const itemsFromPersisted = (rows: ExtractedFieldRow[]): ReviewItem[] =>
       id: field.id,
       fieldId: field.id,
       itemNumber: index + 1,
-      label: field.fieldName,
+      label: field.fieldName.replace(/#\d+$/, ""),
       value: field.fieldValue,
       details:
         source === "MANUAL"
@@ -223,6 +225,24 @@ const stem = (fileName: string) => fileName.replace(/\.[^.]+$/, "") || "extract"
 
 const roundZoom = (value: number) => Math.round(value * 10) / 10;
 
+/** A PDF.js failure must not replace the whole review screen with a blank page. */
+class PreviewBoundary extends Component<{ children: ReactNode; onError: (message: string) => void }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: Error) {
+    this.props.onError(error.message || "This PDF could not be previewed.");
+  }
+
+  render() {
+    if (this.state.failed) return null;
+    return this.props.children;
+  }
+}
+
 export const Results = ({
   catalog,
   job,
@@ -249,6 +269,12 @@ export const Results = ({
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [docxError, setDocxError] = useState("");
   const [pdfError, setPdfError] = useState("");
+  const [pdfReady, setPdfReady] = useState(false);
+  const [textLayerTick, setTextLayerTick] = useState(0);
+  const [docxReady, setDocxReady] = useState(false);
+  const [textReady, setTextReady] = useState(false);
+  const [textError, setTextError] = useState("");
+  const [highlightNote, setHighlightNote] = useState("");
   const [page, setPage] = useState(1);
   const [pages, setPages] = useState(1);
   const previewKind = useMemo(() => {
@@ -257,6 +283,7 @@ export const Results = ({
     const mime = (previewFile.type || "").toLowerCase();
     if (mime.includes("pdf") || name.endsWith(".pdf")) return "pdf" as const;
     if (mime.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp)$/i.test(name)) return "image" as const;
+    if (mime.startsWith("text/") || name.endsWith(".txt") || name.endsWith(".csv")) return "text" as const;
     if (
       mime.includes("wordprocessingml") ||
       mime.includes("msword") ||
@@ -274,6 +301,7 @@ export const Results = ({
   const shellRef = useRef<HTMLDivElement>(null);
   const leftPaneRef = useRef<HTMLElement | null>(null);
   const docxHostRef = useRef<HTMLDivElement>(null);
+  const textHostRef = useRef<HTMLPreElement>(null);
   const catalogFields = useMemo(
     () => [...(catalog?.header ?? []), ...(catalog?.lines ?? [])],
     [catalog],
@@ -342,9 +370,15 @@ export const Results = ({
   useEffect(() => {
     setDocxError("");
     setPdfError("");
+    setPdfReady(false);
+    setTextLayerTick(0);
+    setDocxReady(false);
+    setTextReady(false);
+    setTextError("");
+    setHighlightNote("");
     setPage(1);
     setPages(1);
-    if (!previewFile || previewKind === "pdf") {
+    if (!previewFile || previewKind === "pdf" || previewKind === "text" || previewFile.size === 0) {
       setPreviewUrl(null);
       return;
     }
@@ -362,6 +396,7 @@ export const Results = ({
       if (!host) return;
       host.innerHTML = "";
       setDocxError("");
+      setDocxReady(false);
 
       void (async () => {
         try {
@@ -377,6 +412,7 @@ export const Results = ({
             renderHeaders: true,
             renderFooters: true,
           });
+          if (!cancelled) setDocxReady(true);
         } catch (reason) {
           if (!cancelled) {
             setDocxError(reason instanceof Error ? reason.message : "Word document could not be previewed.");
@@ -389,6 +425,25 @@ export const Results = ({
       cancelled = true;
       window.cancelAnimationFrame(frame);
       if (docxHostRef.current) docxHostRef.current.innerHTML = "";
+    };
+  }, [previewFile, previewKind]);
+
+  useEffect(() => {
+    if (previewKind !== "text" || !previewFile) return;
+    let cancelled = false;
+    setTextReady(false);
+    setTextError("");
+    void previewFile.text().then((body) => {
+      if (cancelled || !textHostRef.current) return;
+      textHostRef.current.textContent = body;
+      setTextReady(true);
+    }).catch((reason) => {
+      if (!cancelled) {
+        setTextError(reason instanceof Error ? reason.message : "Text file could not be previewed.");
+      }
+    });
+    return () => {
+      cancelled = true;
     };
   }, [previewFile, previewKind]);
 
@@ -479,6 +534,53 @@ export const Results = ({
     (item) => item.status !== ("deleted" as ReviewItem["status"]),
   );
   const selected = displayItems.find((item) => item.id === selectedId) ?? null;
+  const highlightValues = useMemo(
+    () =>
+      displayItems
+        .filter((item) => item.status !== ("deleted" as ReviewItem["status"]))
+        .map((item) => item.value.trim())
+        .filter((value) => value.length >= 2),
+    [displayItems],
+  );
+  const highlightScroll = useRef<string | null>(null);
+
+  useEffect(() => {
+    const activeValue = selected?.value ?? "";
+    const paint = (result: { hits: number; hasText: boolean }) => {
+      if (!highlightValues.length) {
+        setHighlightNote("");
+        return;
+      }
+      if (!result.hasText) {
+        if (previewKind === "pdf" && textLayerTick === 0) {
+          setHighlightNote("");
+          return;
+        }
+        setHighlightNote("This file has no selectable text, so fields cannot be marked on the page.");
+        return;
+      }
+      setHighlightNote(result.hits ? "" : "Extracted values were not found in the selectable text.");
+      if (!selectedId || highlightScroll.current === selectedId) return;
+      const hit =
+        viewerRef.current?.querySelector(".field-mark-active") ??
+        docxHostRef.current?.querySelector(".field-mark-active");
+      if (!hit) return;
+      hit.scrollIntoView({ behavior: "smooth", block: "center" });
+      highlightScroll.current = selectedId;
+    };
+
+    if (previewKind === "pdf" && pdfReady && viewerRef.current) {
+      paint(highlightPdfText(viewerRef.current, highlightValues, activeValue));
+      return;
+    }
+    if (previewKind === "docx" && docxReady && docxHostRef.current) {
+      paint(highlightHtmlText(docxHostRef.current, highlightValues, activeValue));
+      return;
+    }
+    if (previewKind === "text" && textReady && textHostRef.current) {
+      paint(highlightHtmlText(textHostRef.current, highlightValues, activeValue));
+    }
+  }, [previewKind, pdfReady, docxReady, textReady, textLayerTick, zoom, highlightValues, selected?.value, selectedId]);
   const stored = documents.find((document) => document.fileName === job?.fileName);
   const documentType = stored?.documentType || extensionOf(job?.fileName || "").replace(".", "").toUpperCase() || "Document";
   const statusLabel =
@@ -884,6 +986,16 @@ export const Results = ({
               </button>
             </div>
           </div>
+          {highlightNote ? (
+            <p className="m-0 border-b border-[var(--line)] bg-[var(--soft)] px-3 py-1 text-[11px] text-[var(--muted)]">
+              {highlightNote}
+            </p>
+          ) : highlightValues.length > 0 && (previewKind === "pdf" || previewKind === "docx" || previewKind === "text") ? (
+            <p className="field-highlight-legend m-0 border-b border-[var(--line)] bg-[var(--soft)] px-3 py-1 text-[11px] text-[var(--muted)]">
+              <span className="field-swatch" /> Extracted values
+              <span className="field-swatch active" /> Selected field
+            </p>
+          ) : null}
 
           <div
             ref={viewerRef}
@@ -906,20 +1018,28 @@ export const Results = ({
               <div className="relative mx-auto bg-white shadow-lg ring-1 ring-slate-200" style={{ width: sheetWidth }}>
                 <img src={previewUrl} alt={job.fileName} className="block w-full object-contain" draggable={false} />
               </div>
-            ) : previewKind === "pdf" && pdfError ? (
+            ) : previewKind === "pdf" && (pdfError || !previewFile || previewFile.size === 0) ? (
               <div className="rounded-2xl border border-dashed border-[var(--line-strong)] bg-[var(--sheet)] px-6 py-8 text-center">
                 <p className="text-sm font-bold text-[var(--ink-strong)]">PDF preview unavailable</p>
-                <p className="mt-1.5 text-xs text-[var(--muted)]">{pdfError}</p>
+                <p className="mt-1.5 text-xs text-[var(--muted)]">
+                  {pdfError || "The PDF file could not be opened."}
+                </p>
                 <p className="mt-1.5 text-xs text-[var(--muted)]">Extracted fields are still available on the right.</p>
               </div>
             ) : previewKind === "pdf" && previewFile ? (
+              <PreviewBoundary
+                key={`${previewFile.name}-${previewFile.size}`}
+                onError={(message) => setPdfError(message)}
+              >
               <Document
                 file={previewFile}
                 onLoadSuccess={({ numPages }) => {
                   setPdfError("");
+                  setPdfReady(true);
                   setPages(Math.max(1, numPages));
                 }}
                 onLoadError={(error) => {
+                  setPdfReady(false);
                   setPdfError(error instanceof Error ? error.message : "This PDF could not be previewed.");
                   setPages(1);
                 }}
@@ -927,7 +1047,8 @@ export const Results = ({
                 error={<p className="p-8 text-center text-sm text-[var(--muted)]">This PDF could not be previewed.</p>}
                 className="mx-auto flex w-fit flex-col gap-4"
               >
-                {Array.from({ length: Math.max(1, pages) }, (_, index) => {
+                {pdfReady
+                  ? Array.from({ length: Math.max(1, pages) }, (_, index) => {
                   const pageNumber = index + 1;
                   return (
                     <div
@@ -940,10 +1061,11 @@ export const Results = ({
                         pageNumber={pageNumber}
                         width={sheetWidth}
                         renderAnnotationLayer={false}
-                        renderTextLayer={false}
+                        renderTextLayer
+                        onRenderTextLayerSuccess={() => setTextLayerTick((tick) => tick + 1)}
                         loading={
                           <div
-                            className="grid place-items-center bg-[var(--soft)] text-xs text-[var(--muted)]"
+                            className="grid place-items-center text-xs text-[var(--muted)]"
                             style={{ width: sheetWidth, height: Math.round(sheetWidth * 1.3) }}
                           >
                             Loading page {pageNumber}…
@@ -952,8 +1074,10 @@ export const Results = ({
                       />
                     </div>
                   );
-                })}
+                })
+                  : null}
               </Document>
+              </PreviewBoundary>
             ) : previewKind === "docx" ? (
               <div className="mx-auto" style={{ width: sheetWidth }}>
                 {docxError ? (
@@ -967,6 +1091,20 @@ export const Results = ({
                     className="docx-fit-host w-full rounded-xl bg-white shadow-lg ring-1 ring-slate-200"
                   />
                 )}
+            </div>
+          ) : previewKind === "text" ? (
+            <div className="mx-auto" style={{ width: sheetWidth }}>
+              {textError ? (
+                <div className="rounded-2xl border border-dashed border-[var(--line-strong)] bg-[var(--sheet)] px-6 py-8 text-center">
+                  <p className="text-sm font-bold text-[var(--ink-strong)]">Text preview failed</p>
+                  <p className="mt-1.5 text-xs text-[var(--muted)]">{textError}</p>
+                </div>
+              ) : (
+                <pre
+                  ref={textHostRef}
+                  className="m-0 min-h-[280px] whitespace-pre-wrap break-words rounded-xl bg-white p-6 text-left font-mono text-[13px] leading-6 text-[var(--ink)] shadow-lg ring-1 ring-slate-200"
+                />
+              )}
             </div>
           ) : (
               <div className="grid h-full min-h-[280px] place-items-center text-center">

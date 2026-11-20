@@ -4,6 +4,7 @@ import { PDFDocument } from "pdf-lib";
 import { getDocumentProxy } from "unpdf";
 import {
   IMAGE_MEDIA,
+  MAX_PDF_PART_BYTES,
   MIN_USABLE_TEXT_CHARS,
   PDF_PART_PAGES,
 } from "../shared/constants.js";
@@ -379,25 +380,89 @@ export const pdfRowText = async (
   }
 };
 
-export const splitPdfParts = async (
-  buffer: Buffer,
-  pageSize = PDF_PART_PAGES,
-) => {
+const slicePdfPages = async (source: PDFDocument, start: number, end: number) => {
+  const part = await PDFDocument.create();
+  const indexes = Array.from({ length: end - start }, (_, offset) => start + offset);
+  const pages = await part.copyPages(source, indexes);
+  pages.forEach((page) => part.addPage(page));
+  return Buffer.from(await part.save());
+};
+
+const collectPdfParts = async (
+  source: PDFDocument,
+  start: number,
+  end: number,
+  pageSize: number,
+): Promise<Buffer[]> => {
+  const count = end - start;
+  if (count <= 0) return [];
+  if (count > pageSize) {
+    const parts: Buffer[] = [];
+    for (let cursor = start; cursor < end; cursor += pageSize) {
+      parts.push(...(await collectPdfParts(source, cursor, Math.min(end, cursor + pageSize), pageSize)));
+    }
+    return parts;
+  }
+  const bytes = await slicePdfPages(source, start, end);
+  if (bytes.length <= MAX_PDF_PART_BYTES || count === 1) return [bytes];
+  const mid = start + Math.ceil(count / 2);
+  return [
+    ...(await collectPdfParts(source, start, mid, pageSize)),
+    ...(await collectPdfParts(source, mid, end, pageSize)),
+  ];
+};
+
+/** Split a PDF into page groups that each stay under Claude's document size limit. */
+export const splitPdfParts = async (buffer: Buffer, pageSize = PDF_PART_PAGES) => {
   const source = await PDFDocument.load(buffer, { ignoreEncryption: true });
   const pageCount = source.getPageCount();
-  if (pageCount <= pageSize) return [buffer];
-  const partCount = Math.ceil(pageCount / pageSize);
-  const parts: Buffer[] = [];
-  for (let index = 0; index < partCount; index += 1) {
-    const start = Math.floor((pageCount * index) / partCount);
-    const end = Math.floor((pageCount * (index + 1)) / partCount);
-    const part = await PDFDocument.create();
-    const pages = await part.copyPages(
-      source,
-      Array.from({ length: end - start }, (_, offset) => start + offset),
-    );
-    pages.forEach((page) => part.addPage(page));
-    parts.push(Buffer.from(await part.save()));
+  if (pageCount === 0) return [];
+  if (buffer.length <= MAX_PDF_PART_BYTES && pageCount <= pageSize) return [buffer];
+  return collectPdfParts(source, 0, pageCount, pageSize);
+};
+
+const MAX_IMAGE_BYTES = 4_500_000;
+
+/** Render one PDF page to a JPEG small enough for a vision request. Page numbers start at 1. */
+export const renderPdfPageJpeg = async (buffer: Buffer, pageNumber: number) => {
+  const { renderPageAsImage } = await import("unpdf");
+  const png = Buffer.from(
+    await renderPageAsImage(new Uint8Array(buffer), pageNumber, {
+      canvasImport: () => import("@napi-rs/canvas"),
+      scale: 1.25,
+    }),
+  );
+  const { createCanvas, loadImage } = await import("@napi-rs/canvas");
+  const image = await loadImage(png);
+  let edge = 1800;
+  let quality = 72;
+  let jpeg = Buffer.alloc(0);
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const scale = Math.min(1, edge / Math.max(image.width, image.height));
+    const width = Math.max(1, Math.round(image.width * scale));
+    const height = Math.max(1, Math.round(image.height * scale));
+    const canvas = createCanvas(width, height);
+    canvas.getContext("2d").drawImage(image, 0, 0, width, height);
+    jpeg = Buffer.from(await canvas.encode("jpeg", quality));
+    if (jpeg.length <= MAX_IMAGE_BYTES) return jpeg;
+    edge = Math.round(edge * 0.75);
+    quality = Math.max(40, quality - 8);
   }
-  return parts;
+  return jpeg;
+};
+
+export type PdfVisionPart = { buffer: Buffer; ext: ".pdf" | ".jpg" };
+
+/** PDF pieces for Claude. A page that is still over 32 MB is sent as a JPEG. */
+export const splitPdfForVision = async (buffer: Buffer): Promise<PdfVisionPart[]> => {
+  const parts = await splitPdfParts(buffer);
+  const vision: PdfVisionPart[] = [];
+  for (const part of parts) {
+    if (part.length <= MAX_PDF_PART_BYTES) {
+      vision.push({ buffer: part, ext: ".pdf" });
+      continue;
+    }
+    vision.push({ buffer: await renderPdfPageJpeg(part, 1), ext: ".jpg" });
+  }
+  return vision;
 };
