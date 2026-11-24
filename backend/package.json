@@ -17,8 +17,10 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.127.0",
+    "@azure/identity": "^4.14.1",
     "@napi-rs/canvas": "^1.1.1",
     "7zip-bin": "^5.2.0",
+    "axios": "^1.21.1",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",

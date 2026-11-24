@@ -321,7 +321,9 @@ const collectFolderFiles = async (
   return { files, skipped };
 };
 
-export const listDriveFiles = async (url: string) => {
+export const listDriveFiles = async (
+  url: string,
+): Promise<{ kind: "file" | "folder"; id: string; files: DriveListedFile[] }> => {
   const parsed = parseDriveUrl(url);
   if (!parsed) {
     throw AppError(HTTP_STATUS.BAD_REQUEST, "Paste a valid Google Drive folder or file link.", {

@@ -1,5 +1,11 @@
 import type { Request, Response } from "express";
 import { downloadDriveFile, listDriveFiles } from "../../services/drive/googleDrive.js";
+import {
+  downloadOneDriveFile,
+  isOneDriveToken,
+  isOneDriveUrl,
+  listOneDriveFiles,
+} from "../../services/onedrive/oneDriveService.js";
 import { AppError, HTTP_STATUS } from "../../utils/errors/index.js";
 
 export const handleListDrive = async (request: Request, response: Response) => {
@@ -8,16 +14,27 @@ export const handleListDrive = async (request: Request, response: Response) => {
       ? (request.body as { url: string }).url.trim()
       : "";
   if (!url) {
-    throw AppError(HTTP_STATUS.BAD_REQUEST, "Paste a Google Drive folder or file link.", {
+    throw AppError(HTTP_STATUS.BAD_REQUEST, "Paste a Google Drive or OneDrive link.", {
       code: "DRIVE_URL_REQUIRED",
     });
   }
-  const result = await listDriveFiles(url);
+  const result = isOneDriveUrl(url) ? await listOneDriveFiles(url) : await listDriveFiles(url);
   response.json(result);
 };
 
 export const handleDownloadDriveFile = async (request: Request, response: Response) => {
   const fileId = String(request.params.fileId || "").trim();
+  if (isOneDriveToken(fileId)) {
+    const file = await downloadOneDriveFile(fileId);
+    response.setHeader("Content-Type", file.mimeType);
+    response.setHeader(
+      "Content-Disposition",
+      `attachment; filename*=UTF-8''${encodeURIComponent(file.fileName)}`,
+    );
+    response.setHeader("X-File-Name", encodeURIComponent(file.fileName));
+    response.send(file.buffer);
+    return;
+  }
   if (!fileId || !/^[a-zA-Z0-9_-]+$/.test(fileId)) {
     throw AppError(HTTP_STATUS.BAD_REQUEST, "Drive file id is invalid.", {
       code: "DRIVE_FILE_ID_INVALID",

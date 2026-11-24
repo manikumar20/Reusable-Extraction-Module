@@ -22,12 +22,15 @@ import {
   LINE_TIMEOUT_MS,
   MAX_TEXT_CHARS,
 } from "../shared/constants.js";
+import type { SourceLocation } from "../../../sourceMapping/types.js";
 
 export type LineManufacturerOption = ManufacturerOption;
 
 /** One buy line: values keyed by catalog field keys from fields.ts. */
 export type ExtractedLine = {
   fields: LineExtraFields;
+  /** Source locations keyed by field key (populated post-Claude by source mapping). */
+  locations?: Record<string, SourceLocation[]>;
 };
 
 const stringField = (fields: LineExtraFields, key: string) => {

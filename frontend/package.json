@@ -10,14 +10,18 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@azure/identity": "^4.14.1",
     "@iconify/react": "^6.0.4",
+    "axios": "^1.21.1",
     "docx-preview": "^0.4.1",
+    "exceljs": "^4.4.0",
     "lucide-react": "^1.70.0",
-    "pdfjs-dist": "^6.5.438",
+    "pdfjs-dist": "6.3.289",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-pdf": "^11.0.0",
-    "react-router-dom": "^7.18.5"
+    "react-router-dom": "^7.18.5",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.4",

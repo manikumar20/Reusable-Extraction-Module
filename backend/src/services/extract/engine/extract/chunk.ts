@@ -93,7 +93,8 @@ export const runPool = async (
 
 /** More optional fields means more output per item, so use smaller chunks. */
 export const chunkCharsFor = (extraFieldCount: number) => {
-  if (extraFieldCount === 0) return CHUNK_CHARS;
+  // Defaults-only jobs stay on one Claude pass for typical documents.
+  if (extraFieldCount === 0) return MAX_TEXT_CHARS;
   return extraFieldCount <= FEW_EXTRA_FIELDS
     ? CHUNK_CHARS_FEW_FIELDS
     : CHUNK_CHARS_MANY_FIELDS;

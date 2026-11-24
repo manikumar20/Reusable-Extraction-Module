@@ -14,6 +14,7 @@ import { tokenCostUsd, type ExtractionTokenUsage } from "./engine/shared/tokens.
 import { deleteDocument, insertExtractedDocument, saveExtractedFields, updateDocumentStatus } from "../../db/documents/documentDb.js";
 import { getTemplate } from "../../db/templates/templateDb.js";
 import { apiKey, recordModel } from "../../config/runtime.js";
+import { attachSourceLocations } from "../sourceMapping/index.js";
 
 export type JobTemplate = {
   id?: string;
@@ -123,7 +124,12 @@ const view = (job: Job): PublicJob => ({
   status: job.status,
   phase: job.phase,
   progress: job.progress,
-  lines: job.lines.map((line) => ({ fields: lineFieldValues(line) })),
+  lines: job.lines.map((line) => ({
+    fields: lineFieldValues(line),
+    ...(line.locations && Object.keys(line.locations).length
+      ? { locations: line.locations }
+      : {}),
+  })),
   usage: job.usage,
   lineCostUsd: job.lineCostUsd,
   template: job.template,
@@ -235,6 +241,17 @@ export const runJob = async (
     if (abort.signal.aborted || job.status !== "running") return;
     job.usage = result.usage;
     job.lineCostUsd = tokenCostUsd(result.usage);
+    // Locate values in the source file (never re-runs Claude).
+    try {
+      job.lines = await attachSourceLocations({
+        fileName,
+        mimeType: stored?.mimeType,
+        buffer: fileBuffer,
+        lines: job.lines,
+      });
+    } catch {
+      // Mapping failures must not fail extraction.
+    }
     job.status = "done";
     job.phase = "done";
     job.progress = 100;

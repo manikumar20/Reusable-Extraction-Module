@@ -4,6 +4,7 @@ import { getActiveTemplate, getTemplate, toJobTemplate } from "../../db/template
 import { ExtractionError, extractDocument } from "../extract/engine/extract/run.js";
 import { lineIdentityValue, type ExtractedLine } from "../extract/engine/extract/records.js";
 import { lineExtrasFromTemplate, type JobTemplate } from "../extract/extractService.js";
+import { attachSourceLocations } from "../sourceMapping/index.js";
 import { apiKey, recordModel } from "../../config/runtime.js";
 import {
   STAGED_STATUSES,
@@ -31,9 +32,15 @@ const mergeLines = (current: ExtractedLine[], batch: ExtractedLine[]) => {
   return lines;
 };
 
+const normalizeTemplateId = (templateId: number | null | undefined) =>
+  typeof templateId === "number" && Number.isInteger(templateId) && templateId > 0
+    ? templateId
+    : null;
+
 const resolveTemplate = async (templateId: number | null): Promise<JobTemplate | null> => {
-  if (templateId != null) {
-    const saved = await getTemplate(String(templateId));
+  const normalized = normalizeTemplateId(templateId);
+  if (normalized != null) {
+    const saved = await getTemplate(String(normalized));
     if (saved) return toJobTemplate(saved);
   }
   const active = await getActiveTemplate();
@@ -41,7 +48,8 @@ const resolveTemplate = async (templateId: number | null): Promise<JobTemplate |
 };
 
 const numericTemplateId = async (templateId: number | null) => {
-  if (templateId != null) return templateId;
+  const normalized = normalizeTemplateId(templateId);
+  if (normalized != null) return normalized;
   const active = await getActiveTemplate();
   return active?.numericId ?? null;
 };
@@ -77,6 +85,24 @@ const extractClaimedFile = async (claimed: StagedFile): Promise<StagedFile | nul
         lines = mergeLines(lines, records);
       },
     });
+
+    try {
+      // Large sheets can spend minutes mapping; cap so Processing does not hang forever.
+      const mapped = attachSourceLocations({
+        fileName,
+        mimeType: claimed.mimeType,
+        buffer: plain,
+        lines,
+      });
+      lines = await Promise.race([
+        mapped,
+        new Promise<typeof lines>((resolve) => {
+          setTimeout(() => resolve(lines), 45_000);
+        }),
+      ]);
+    } catch {
+      // Mapping failures must not fail extraction.
+    }
 
     const created = await insertExtractedDocument({
       fileName,

@@ -17,6 +17,23 @@ export type StoredDocument = {
   templateNumber: number | null;
 };
 
+export type SourceLocation = {
+  adapter: "pdf" | "text" | "office" | "excel" | "image" | "unknown";
+  page: number;
+  x?: number;
+  y?: number;
+  w?: number;
+  h?: number;
+  start?: number;
+  end?: number;
+  quote?: string;
+  confidence: "exact" | "normalized";
+  sheet?: string;
+  cell?: string;
+  row?: number;
+  col?: number;
+};
+
 export type ExtractedField = {
   id: string;
   documentId: number;
@@ -25,6 +42,7 @@ export type ExtractedField = {
   fieldValue: string;
   dataType: string;
   source: string;
+  sourceLocation: SourceLocation[] | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -53,8 +71,19 @@ type FieldRow = {
   field_value: string;
   data_type: string;
   source: string;
+  source_location?: SourceLocation[] | string | null;
   created_at: Date | string;
   updated_at: Date | string;
+};
+
+const parseSourceLocation = (value: FieldRow["source_location"]): SourceLocation[] | null => {
+  if (!value) return null;
+  const rows = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
+  if (!Array.isArray(rows) || !rows.length) return null;
+  return rows.filter(
+    (row): row is SourceLocation =>
+      Boolean(row && typeof row === "object" && typeof (row as SourceLocation).page === "number"),
+  );
 };
 
 const toIso = (value: Date | string) => {
@@ -121,6 +150,7 @@ const mapField = (row: FieldRow): ExtractedField => ({
   fieldValue: row.field_value ?? "",
   dataType: row.data_type || "STRING",
   source: row.source || "AI",
+  sourceLocation: parseSourceLocation(row.source_location),
   createdAt: toIso(row.created_at),
   updatedAt: toIso(row.updated_at),
 });
@@ -224,9 +254,9 @@ export const insertExtractedDocument = async (input: {
   const { rows } = await getPool().query<{ id: number }>(
     `
       INSERT INTO documents (
-        file_name, stored_name, mime_type, document_type, status, source, template_id, file_data, completed_at
+        file_name, stored_name, mime_type, document_type, status, source, template_id, file_data, completed_at, in_library
       )
-      VALUES ($1, '', $2, $3, 'Completed', 'AI', $4, $5, NOW())
+      VALUES ($1, '', $2, $3, 'Completed', 'AI', $4, $5, NOW(), FALSE)
       RETURNING id
     `,
     [input.fileName, input.mimeType, input.documentType, input.templateId ?? null, input.fileData],
@@ -297,8 +327,8 @@ export const listDocuments = async (): Promise<StoredDocument[]> => {
       FROM documents d
       LEFT JOIN extracted_fields f ON f.document_id = d.id
       LEFT JOIN templates t ON t.numeric_id = d.template_id
-      WHERE d.status = 'Completed'
-         OR (d.status = 'Failed' AND d.in_library)
+      WHERE d.in_library = TRUE
+        AND (d.status = 'Completed' OR d.status = 'Failed')
       GROUP BY d.id, t.numeric_id, t.name
       ORDER BY d.uploaded_at DESC, d.id DESC
     `,
@@ -311,7 +341,7 @@ export const listExtractedFields = async (documentId: number): Promise<Extracted
   if (!found.rowCount) return null;
   const { rows } = await getPool().query<FieldRow>(
     `
-      SELECT id, document_id, field_name, field_key, field_value, data_type, source, created_at, updated_at
+      SELECT id, document_id, field_name, field_key, field_value, data_type, source, source_location, created_at, updated_at
       FROM extracted_fields
       WHERE document_id = $1
     `,
@@ -332,13 +362,13 @@ export const updateExtractedField = async (
           UPDATE extracted_fields
           SET field_value = $3, source = 'MANUAL', updated_at = NOW()
           WHERE document_id = $1 AND id = $2
-          RETURNING id, document_id, field_name, field_key, field_value, data_type, source, created_at, updated_at
+          RETURNING id, document_id, field_name, field_key, field_value, data_type, source, source_location, created_at, updated_at
         `
       : `
           UPDATE extracted_fields
           SET field_value = $3, field_name = $4, source = 'MANUAL', updated_at = NOW()
           WHERE document_id = $1 AND id = $2
-          RETURNING id, document_id, field_name, field_key, field_value, data_type, source, created_at, updated_at
+          RETURNING id, document_id, field_name, field_key, field_value, data_type, source, source_location, created_at, updated_at
         `,
     fieldName == null
       ? [documentId, fieldId, fieldValue]
@@ -364,9 +394,9 @@ export const createExtractedField = async (input: {
   const { rows } = await getPool().query<FieldRow>(
     `
       INSERT INTO extracted_fields
-        (id, document_id, field_name, field_key, field_value, data_type, source)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
-      RETURNING id, document_id, field_name, field_key, field_value, data_type, source, created_at, updated_at
+        (id, document_id, field_name, field_key, field_value, data_type, source, source_location)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, NULL)
+      RETURNING id, document_id, field_name, field_key, field_value, data_type, source, source_location, created_at, updated_at
     `,
     [
       randomUUID(),
@@ -387,6 +417,41 @@ export const deleteExtractedField = async (documentId: number, fieldId: string) 
     [documentId, fieldId],
   );
   return (rowCount ?? 0) > 0;
+};
+
+/** Patch source_location for existing extracted fields (no Claude call). */
+export const updateFieldSourceLocations = async (
+  documentId: number,
+  updates: { fieldKey: string; locations: SourceLocation[] | null }[],
+) => {
+  if (!updates.length) return 0;
+  const client = await getPool().connect();
+  let changed = 0;
+  try {
+    await client.query("BEGIN");
+    for (const update of updates) {
+      const { rowCount } = await client.query(
+        `
+          UPDATE extracted_fields
+          SET source_location = $3::jsonb, updated_at = NOW()
+          WHERE document_id = $1 AND field_key = $2
+        `,
+        [
+          documentId,
+          update.fieldKey,
+          update.locations?.length ? JSON.stringify(update.locations) : null,
+        ],
+      );
+      changed += rowCount ?? 0;
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+  return changed;
 };
 
 export const getDocumentFileMeta = async (documentId: number) => {
@@ -425,20 +490,27 @@ export const deleteDocument = async (documentId: number): Promise<boolean> => {
 /** Persist line fields extracted from one uploaded document. */
 export const saveExtractedFields = async (input: {
   documentId: number;
-  lines: { fields: Record<string, unknown> }[];
+  lines: {
+    fields: Record<string, unknown>;
+    locations?: Record<string, SourceLocation[]>;
+  }[];
 }) => {
   const client = await getPool().connect();
   try {
     await client.query("BEGIN");
     await client.query(`DELETE FROM extracted_fields WHERE document_id = $1`, [input.documentId]);
-    const insertField = (fieldKey: string, fieldValue: unknown) => {
+    const insertField = (
+      fieldKey: string,
+      fieldValue: unknown,
+      locations: SourceLocation[] | null,
+    ) => {
       const baseKey = fieldKey.split("#")[0] || fieldKey;
       const catalog = catalogByKey.get(baseKey);
       return client.query(
         `
           INSERT INTO extracted_fields
-            (id, document_id, field_name, field_key, field_value, data_type, source)
-          VALUES ($1, $2, $3, $4, $5, $6, 'AI')
+            (id, document_id, field_name, field_key, field_value, data_type, source, source_location)
+          VALUES ($1, $2, $3, $4, $5, $6, 'AI', $7::jsonb)
         `,
         [
           randomUUID(),
@@ -447,13 +519,18 @@ export const saveExtractedFields = async (input: {
           fieldKey,
           valueText(fieldValue),
           dataTypeOf(baseKey),
+          locations?.length ? JSON.stringify(locations) : null,
         ],
       );
     };
     for (const [lineIndex, line] of input.lines.entries()) {
       for (const [fieldKey, fieldValue] of Object.entries(line.fields)) {
         if (isEmptyValue(fieldValue)) continue;
-        await insertField(`${fieldKey}#${lineIndex + 1}`, fieldValue);
+        await insertField(
+          `${fieldKey}#${lineIndex + 1}`,
+          fieldValue,
+          line.locations?.[fieldKey] ?? null,
+        );
       }
     }
     await client.query(

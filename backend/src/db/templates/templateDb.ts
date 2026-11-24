@@ -401,7 +401,6 @@ const parseExtractedFields = (value: unknown): TemplateField[] => {
       catalogKey: typeof row.catalogKey === "string" ? row.catalogKey : undefined,
       level: "line",
       suggested: row.suggested === true,
-      sampleValue: typeof row.sampleValue === "string" ? row.sampleValue : undefined,
     });
   }
   return fields;

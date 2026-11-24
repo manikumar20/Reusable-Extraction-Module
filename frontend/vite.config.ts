@@ -9,6 +9,17 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   envDir: path.resolve(root, "config"),
+  resolve: {
+    alias: {
+      "@": path.resolve(root, "src"),
+    },
+  },
+  optimizeDeps: {
+    include: ["pdfjs-dist", "exceljs", "xlsx"],
+  },
+  worker: {
+    format: "es",
+  },
   server: {
     port: 5173,
   },

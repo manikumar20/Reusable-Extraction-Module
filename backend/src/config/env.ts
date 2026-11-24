@@ -68,9 +68,18 @@ export const env = {
   anthropicApiKey: optional("ANTHROPIC_API_KEY"),
   anthropicAuthToken: optional("ANTHROPIC_AUTH_TOKEN"),
   googleDriveApiKey: optional("GOOGLE_DRIVE_API_KEY") || optional("GOOGLE_API_KEY"),
+  msClientId: optional("MS_CLIENT_ID"),
+  msClientSecret: optional("MS_CLIENT_SECRET"),
+  msTenantId: optional("MS_TENANT_ID"),
+  /** OAuth redirect for delegated OneDrive connect (must match Azure App Registration). */
+  msRedirectUri: optional("MS_REDIRECT_URI", "http://localhost:8787/api/onedrive/callback"),
+  /** Where to send the browser after Microsoft sign-in. */
+  msFrontendRedirect: optional("MS_FRONTEND_REDIRECT", "http://localhost:5173/"),
   isProduction: required("NODE_ENV") === "production",
 } as const;
 
+const msGraphConfigured = Boolean(env.msClientId && env.msClientSecret && env.msTenantId);
+
 console.info(
-  `Env loaded from ${ENV_FILE} (ANTHROPIC_API_KEY ${env.anthropicApiKey ? "set" : "missing"}, GOOGLE_DRIVE_API_KEY ${env.googleDriveApiKey ? "set" : "missing"})`,
+  `Env loaded from ${ENV_FILE} (ANTHROPIC_API_KEY ${env.anthropicApiKey ? "set" : "missing"}, GOOGLE_DRIVE_API_KEY ${env.googleDriveApiKey ? "set" : "missing"}, MS_GRAPH ${msGraphConfigured ? "set" : "missing"})`,
 );

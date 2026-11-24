@@ -7,8 +7,13 @@ const optionalText = (max: number) =>
     return trimmed || undefined;
   }, z.string().max(max).optional());
 
+/** Numeric document ids, or in-memory temp upload ids (`tmp-…`). */
 export const batchIdParamsSchema = z.object({
-  id: z.string().regex(/^\d+$/, "Document id is required."),
+  id: z
+    .string()
+    .trim()
+    .min(1, "Document id is required.")
+    .regex(/^(?:\d+|tmp-\d+-\d+)$/, "Document id is required."),
 });
 
 const optionalFlag = z.preprocess((value) => {

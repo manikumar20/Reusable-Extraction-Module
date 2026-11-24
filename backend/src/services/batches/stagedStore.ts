@@ -48,7 +48,20 @@ type HeldUpload = {
 /** Compressed uploads stay here until extraction finishes. They are not database rows yet. */
 const pending = new Map<string, HeldUpload>();
 
-const allocTempId = () => `${Date.now()}${Math.floor(Math.random() * 1000).toString().padStart(3, "0")}`;
+/** Prefixed so these never collide with PostgreSQL document integer ids. */
+const allocTempId = () =>
+  `tmp-${Date.now()}-${Math.floor(Math.random() * 1000).toString().padStart(3, "0")}`;
+
+const PG_INT_MAX = 2_147_483_647;
+
+const asDocumentId = (id: string) => {
+  if (id.startsWith("tmp-")) return null;
+  const documentId = Number(id);
+  if (!Number.isInteger(documentId) || documentId <= 0 || documentId > PG_INT_MAX) {
+    return null;
+  }
+  return documentId;
+};
 
 export const temporaryGzipFor = (id: string) => pending.get(id)?.gzip ?? null;
 
@@ -141,8 +154,8 @@ export const saveCompressedUpload = async (input: {
 export const compressedGzipFor = async (id: string) => {
   const held = temporaryGzipFor(id);
   if (held) return held;
-  const documentId = Number(id);
-  if (!Number.isInteger(documentId) || documentId <= 0) return null;
+  const documentId = asDocumentId(id);
+  if (documentId == null) return null;
   return getCompressedDocument(documentId);
 };
 
@@ -155,8 +168,8 @@ export const readCompressedBytes = async (id: string) => {
 export const readStagedFile = async (id: string): Promise<StagedFile | null> => {
   const held = pending.get(id);
   if (held) return held.record;
-  const documentId = Number(id);
-  if (!Number.isInteger(documentId) || documentId <= 0) return null;
+  const documentId = asDocumentId(id);
+  if (documentId == null) return null;
   const { rows } = await getPool().query<DocumentFileRow>(
     `SELECT ${FILE_COLUMNS} FROM documents WHERE id = $1 AND status = 'Completed'`,
     [documentId],
@@ -164,7 +177,47 @@ export const readStagedFile = async (id: string): Promise<StagedFile | null> => 
   return rows[0] ? toStaged(rows[0]) : null;
 };
 
-export const listStagedFiles = async (): Promise<StagedFile[]> => [...pending.values()].map((held) => held.record);
+/** Processing older than this is treated as abandoned (Claude hang / crashed worker). */
+const STALE_PROCESSING_MS = 30 * 1000;
+
+const releaseStaleProcessing = async (files: StagedFile[]) => {
+  const now = Date.now();
+  for (const file of files) {
+    if (file.status !== STAGED_STATUSES.PROCESSING) continue;
+    const started = file.startedAt ? new Date(file.startedAt).getTime() : 0;
+    if (!started || now - started < STALE_PROCESSING_MS) continue;
+    await updateStagedFile(file.id, {
+      status: STAGED_STATUSES.UPLOADED,
+      startedAt: null,
+      completedAt: null,
+      errorMessage: "Processing timed out. Click Extract to try again.",
+    });
+  }
+};
+
+/** In-memory uploads plus completed-but-unpublished documents (survive refresh until Save). */
+export const listStagedFiles = async (): Promise<StagedFile[]> => {
+  const fromMemory = [...pending.values()].map((held) => held.record);
+  await releaseStaleProcessing(fromMemory);
+  const refreshedMemory = [...pending.values()].map((held) => held.record);
+  const memoryDocIds = new Set(
+    refreshedMemory
+      .map((file) => file.documentId)
+      .filter((id): id is number => typeof id === "number"),
+  );
+  const { rows } = await getPool().query<DocumentFileRow>(
+    `
+      SELECT ${FILE_COLUMNS}
+      FROM documents
+      WHERE in_library = FALSE AND status = 'Completed'
+      ORDER BY uploaded_at DESC, id DESC
+    `,
+  );
+  const fromDb = rows
+    .map(toStaged)
+    .filter((file) => file.documentId == null || !memoryDocIds.has(file.documentId));
+  return [...refreshedMemory, ...fromDb];
+};
 
 export const updateStagedFile = async (
   id: string,
@@ -185,7 +238,7 @@ export const claimStagedFile = async (id: string): Promise<StagedFile | null> =>
     if (current.status === STAGED_STATUSES.COMPLETED) return null;
     if (current.status === STAGED_STATUSES.PROCESSING) {
       const started = current.startedAt ? new Date(current.startedAt).getTime() : 0;
-      const fresh = started > 0 && Date.now() - started < 2 * 60 * 1000;
+      const fresh = started > 0 && Date.now() - started < STALE_PROCESSING_MS;
       if (fresh) return null;
     }
     const held = pending.get(id);
@@ -201,9 +254,7 @@ export const claimStagedFile = async (id: string): Promise<StagedFile | null> =>
   });
 
 export const removeStagedFile = async (id: string) => {
-  const held = pending.get(id);
-  if (!held) return;
-  if (held.record.status === STAGED_STATUSES.COMPLETED) return;
+  // Allow cleanup after Save/dismiss — completed rows live in documents until published.
   pending.delete(id);
 };
 

@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS extracted_fields (
   field_value TEXT NOT NULL DEFAULT '',
   data_type VARCHAR(40) NOT NULL DEFAULT 'STRING',
   source VARCHAR(20) NOT NULL DEFAULT 'AI',
+  source_location JSONB NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

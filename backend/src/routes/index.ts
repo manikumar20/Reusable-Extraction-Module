@@ -4,6 +4,7 @@ import { batchRouter } from "./batches/batchRoutes.js";
 import { documentRouter } from "./documents/documentRoutes.js";
 import { extractRouter } from "./extract/extractRoutes.js";
 import { healthRouter } from "./health/healthRoutes.js";
+import { oneDriveRouter } from "./onedrive/oneDriveRoutes.js";
 import { templateRouter } from "./templates/templateRoutes.js";
 
 export const apiRouter = Router();
@@ -12,5 +13,6 @@ apiRouter.use("/health", healthRouter);
 apiRouter.use("/auth", authRouter);
 apiRouter.use("/documents", documentRouter);
 apiRouter.use("/extract", extractRouter);
+apiRouter.use("/onedrive", oneDriveRouter);
 apiRouter.use("/batches", batchRouter);
 apiRouter.use("/templates", templateRouter);

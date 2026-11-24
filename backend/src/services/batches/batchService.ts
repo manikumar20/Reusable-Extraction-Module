@@ -15,7 +15,7 @@ import {
 } from "./stagedStore.js";
 import { gzipUpload, validateUploadFiles, type UploadedMemoryFile } from "./zipArchive.js";
 
-const BUSY_MS = 2 * 60 * 1000;
+const BUSY_MS = 30 * 1000;
 
 export const stageUploads = async (input: {
   files: UploadedMemoryFile[];
@@ -35,7 +35,7 @@ export const stageUploads = async (input: {
         fileName: compressed.originalName,
         mimeType: file.mimetype || "",
         documentType: resolveDocumentType("", compressed.originalName),
-        templateId,
+        templateId: templateId && templateId > 0 ? templateId : null,
         fileData: compressed.fileData,
       });
       staged.push({ ...record, sizeBytes: compressed.sizeBytes });

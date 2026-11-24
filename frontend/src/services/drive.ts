@@ -1,23 +1,5 @@
-import { apiUrl } from "./api";
-import type { DriveListedFile } from "../types";
-
-export const isGoogleDriveUrl = (value: string) => {
-  try {
-    const url = new URL(value.trim());
-    const host = url.hostname.replace(/^www\./, "").toLowerCase();
-    return (
-      host.endsWith("google.com") &&
-      (url.pathname.includes("/folders/") ||
-        url.pathname.includes("/file/d/") ||
-        url.pathname.includes("/document/d/") ||
-        url.pathname.includes("/spreadsheets/d/") ||
-        url.pathname.includes("/presentation/d/") ||
-        url.searchParams.has("id"))
-    );
-  } catch {
-    return false;
-  }
-};
+import { apiUrl } from "@/services/client";
+import type { DriveListedFile } from "@/types";
 
 export const listDriveFiles = async (url: string) => {
   const response = await fetch(apiUrl("/extract/drive/list"), {
@@ -31,7 +13,7 @@ export const listDriveFiles = async (url: string) => {
     error?: { message?: string };
   } | null;
   if (!response.ok || !payload?.files?.length) {
-    throw new Error(payload?.error?.message || "Could not list Google Drive files.");
+    throw new Error(payload?.error?.message || "Could not load that Drive link.");
   }
   return payload as { kind: "folder" | "file"; files: DriveListedFile[] };
 };

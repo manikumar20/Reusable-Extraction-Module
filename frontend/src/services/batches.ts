@@ -1,4 +1,4 @@
-import { apiUrl } from "./api";
+import { apiUrl } from "@/services/client";
 
 export type StagedStatus = "Uploaded" | "Processing" | "Completed" | "Failed";
 
@@ -66,7 +66,11 @@ export const listStagedFiles = async () => {
 
 export const getStagedFile = async (id: string) => {
   const response = await fetch(apiUrl(`/batches/${id}`));
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) {
+    const error = new Error(await readError(response)) as Error & { status?: number };
+    error.status = response.status;
+    throw error;
+  }
   return (await response.json()) as { file: StagedFile };
 };
 
